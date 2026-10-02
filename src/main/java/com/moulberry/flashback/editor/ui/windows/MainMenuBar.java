@@ -4,7 +4,7 @@ import com.moulberry.flashback.Flashback;
 import com.moulberry.flashback.configuration.FlashbackConfigV1;
 import com.moulberry.flashback.exporting.ExportJobQueue;
 import com.moulberry.flashback.screen.select_replay.SelectReplayScreen;
-import imgui.flashback.ImGui;
+import imgui.moulberry90.ImGui;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.TitleScreen;
 import net.minecraft.client.resources.language.I18n;
@@ -74,7 +74,7 @@ public class MainMenuBar {
                     minecraft.level.disconnect(Component.empty());
                 }
                 minecraft.disconnectWithProgressScreen();
-                minecraft.setScreen(new SelectReplayScreen(new TitleScreen()));
+                minecraft.gui.setScreen(new SelectReplayScreen(new TitleScreen()));
             }
             ImGui.endMenu();
         }
@@ -85,31 +85,23 @@ public class MainMenuBar {
         ImGui.separator();
 
         if (ImGui.menuItem(I18n.get("flashback.player_list") + "##PlayerList")) {
-            toggleWindow("player_list");
+            WindowType.PLAYER_LIST.toggle();
         }
         if (ImGui.menuItem(I18n.get("flashback.movement") + "##Movement")) {
-            toggleWindow("movement");
+            WindowType.MOVEMENT.toggle();
         }
         if (ImGui.menuItem(I18n.get("flashback.render_filter") + "##RenderFilter")) {
-            toggleWindow("render_filter");
+            WindowType.RENDER_FILTER.toggle();
+        }
+        if (ImGui.menuItem(I18n.get("flashback.keybinds") + "##Keybinds")) {
+            WindowType.KEYBINDS.toggle();
         }
 
         ImGui.separator();
 
         if (ImGui.menuItem(I18n.get("flashback.hide_replay_ui") + "##HideReplayUI")) {
-            Minecraft.getInstance().options.hideGui = true;
+            Minecraft.getInstance().gui.hud.toggle();
         }
-    }
-
-    private static void toggleWindow(String windowName) {
-        var openedWindows = Flashback.getConfig().internal.openedWindows;
-        boolean playerListIsOpen = openedWindows.contains(windowName);
-        if (playerListIsOpen) {
-            openedWindows.remove(windowName);
-        } else {
-            openedWindows.add(windowName);
-        }
-        Flashback.getConfig().delayedSaveToDefaultFolder();
     }
 
 }

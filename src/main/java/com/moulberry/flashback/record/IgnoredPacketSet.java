@@ -71,7 +71,7 @@ public class IgnoredPacketSet {
         ClientboundMoveMinecartPacket.class,
         ClientboundContainerClosePacket.class,
         ClientboundContainerSetContentPacket.class,
-        ClientboundHorseScreenOpenPacket.class,
+        ClientboundMountScreenOpenPacket.class,
         ClientboundContainerSetDataPacket.class,
         ClientboundContainerSetSlotPacket.class,
         ClientboundForgetLevelChunkPacket.class,
@@ -112,7 +112,9 @@ public class IgnoredPacketSet {
         ClientboundDebugChunkValuePacket.class,
         ClientboundDebugBlockValuePacket.class,
         ClientboundDebugEntityValuePacket.class,
-        ClientboundDebugEventPacket.class
+        ClientboundDebugEventPacket.class,
+        ClientboundGameRuleValuesPacket.class,
+        ClientboundLowDiskSpaceWarningPacket.class
     );
 
 }

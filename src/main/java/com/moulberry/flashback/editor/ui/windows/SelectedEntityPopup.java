@@ -1,37 +1,35 @@
 package com.moulberry.flashback.editor.ui.windows;
 
 import com.mojang.authlib.GameProfile;
-import com.mojang.authlib.yggdrasil.ProfileResult;
-import com.mojang.blaze3d.platform.Window;
+import com.mojang.authlib.services.ProfileResult;
 import com.moulberry.flashback.FilePlayerSkin;
-import com.moulberry.flashback.Flashback;
 import com.moulberry.flashback.Utils;
 import com.moulberry.flashback.combo_options.GlowingOverride;
 import com.moulberry.flashback.editor.ui.ImGuiHelper;
 import com.moulberry.flashback.editor.ui.ReplayUI;
-import com.moulberry.flashback.exporting.AsyncFileDialogs;
 import com.moulberry.flashback.state.EditorState;
-import imgui.flashback.ImGui;
-import imgui.flashback.type.ImString;
+import com.moulberry.flashback.utils.AsyncFileDialogs;
+import imgui.moulberry90.ImGui;
+import imgui.moulberry90.type.ImString;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.resources.language.I18n;
 import net.minecraft.commands.arguments.EntityAnchorArgument;
-import net.minecraft.network.chat.CommonComponents;
-import net.minecraft.network.chat.Component;
+import net.minecraft.world.entity.Avatar;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.player.PlayerModelPart;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.scores.DisplaySlot;
 import net.minecraft.world.scores.Objective;
 import net.minecraft.world.scores.PlayerTeam;
 import net.minecraft.world.scores.Scoreboard;
-import net.minecraft.world.scores.Team;
-import org.lwjgl.glfw.GLFW;
 
 import java.nio.file.Path;
+import java.util.EnumSet;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
@@ -88,14 +86,36 @@ public class SelectedEntityPopup {
             editorState.audioSourceEntity = entity.getUUID();
             editorState.markDirty();
         }
-        boolean isHiddenDuringExport = editorState.hideDuringExport.contains(entity.getUUID());
-        if (ImGui.checkbox(I18n.get("flashback.hide_during_export"), isHiddenDuringExport)) {
-            if (isHiddenDuringExport) {
-                editorState.hideDuringExport.remove(entity.getUUID());
-            } else {
-                editorState.hideDuringExport.add(entity.getUUID());
+
+        if (FabricLoader.getInstance().isModLoaded("voicechat")) {
+            boolean isMuted = editorState.muteVoice.contains(entity.getUUID());
+            if (ImGui.checkbox(I18n.get("flashback.mute_voice"), isMuted)) {
+                if (isMuted) {
+                    editorState.muteVoice.remove(entity.getUUID());
+                } else {
+                    editorState.muteVoice.add(entity.getUUID());
+                }
+                editorState.markDirty();
             }
-            editorState.markDirty();
+        }
+
+        boolean isHiddenDuringExport;
+        if (editorState.hideAllSpectators && entity instanceof Player player && player.gameMode() == GameType.SPECTATOR) {
+            isHiddenDuringExport = true;
+            ImGui.beginDisabled();
+            ImGui.checkbox(I18n.get("flashback.hide_during_export"), true);
+            ImGui.endDisabled();
+            ImGui.setItemTooltip(I18n.get("flashback.hidden_because_spectator"));
+        } else {
+            isHiddenDuringExport = editorState.hideDuringExport.contains(entity.getUUID());
+            if (ImGui.checkbox(I18n.get("flashback.hide_during_export"), isHiddenDuringExport)) {
+                if (isHiddenDuringExport) {
+                    editorState.hideDuringExport.remove(entity.getUUID());
+                } else {
+                    editorState.hideDuringExport.add(entity.getUUID());
+                }
+                editorState.markDirty();
+            }
         }
 
         if (!isHiddenDuringExport) {
@@ -214,6 +234,94 @@ public class SelectedEntityPopup {
                 }
             } else {
                 showGlowingDropdown(entity, editorState);
+            }
+            if (entity instanceof LivingEntity) {
+                if (ImGui.collapsingHeader("Equipment")) {
+                    EnumSet<EquipmentSlot> hiddenEquipment = editorState.hiddenEquipment.get(entity.getUUID());
+                    if (hiddenEquipment == null) {
+                        hiddenEquipment = EnumSet.noneOf(EquipmentSlot.class);
+                    } else {
+                        hiddenEquipment = hiddenEquipment.clone();
+                    }
+
+                    boolean changed = false;
+
+                    for (EquipmentSlot value : EquipmentSlot.values()) {
+                        if (entity instanceof Player && (value == EquipmentSlot.BODY || value == EquipmentSlot.SADDLE)) {
+                            continue;
+                        }
+
+                        boolean hidden = hiddenEquipment.contains(value);
+                        if (ImGui.checkbox(value.getName(), !hidden)) {
+                            if (hidden) {
+                                hiddenEquipment.remove(value);
+                            } else {
+                                hiddenEquipment.add(value);
+                            }
+                            changed = true;
+                        }
+                    }
+
+                    if (changed) {
+                        if (hiddenEquipment.isEmpty()) {
+                            editorState.hiddenEquipment.remove(entity.getUUID());
+                        } else {
+                            editorState.hiddenEquipment.put(entity.getUUID(), hiddenEquipment);
+                        }
+                    }
+                }
+            }
+            if (entity instanceof Avatar avatar) {
+                if (ImGui.collapsingHeader("Model Parts")) {
+                    EnumSet<PlayerModelPart> hiddenModelParts = editorState.hiddenModelParts.get(entity.getUUID());
+
+                    boolean changed = false;
+
+                    EnumSet<PlayerModelPart> actualHiddenModelParts = EnumSet.noneOf(PlayerModelPart.class);
+                    for (PlayerModelPart value : PlayerModelPart.values()) {
+                        if (!avatar.isModelPartShown(value)) {
+                            actualHiddenModelParts.add(value);
+                        }
+                    }
+
+                    boolean overriding = hiddenModelParts != null;
+                    if (ImGui.checkbox("Override", overriding)) {
+                        if (overriding) {
+                            hiddenModelParts = null;
+                        } else {
+                            hiddenModelParts = actualHiddenModelParts;
+                        }
+                        changed = true;
+                    }
+
+                    if (hiddenModelParts != null) {
+                        for (PlayerModelPart value : PlayerModelPart.values()) {
+                            boolean hidden = hiddenModelParts.contains(value);
+                            if (ImGui.checkbox(value.getName().getString(), !hidden)) {
+                                if (hidden) {
+                                    hiddenModelParts.remove(value);
+                                } else {
+                                    hiddenModelParts.add(value);
+                                }
+                                changed = true;
+                            }
+                        }
+                    } else {
+                        ImGui.beginDisabled();
+                        for (PlayerModelPart value : PlayerModelPart.values()) {
+                            ImGui.checkbox(value.getName().getString(), !actualHiddenModelParts.contains(value));
+                        }
+                        ImGui.endDisabled();
+                    }
+
+                    if (changed) {
+                        if (hiddenModelParts == null) {
+                            editorState.hiddenModelParts.remove(entity.getUUID());
+                        } else {
+                            editorState.hiddenModelParts.put(entity.getUUID(), hiddenModelParts);
+                        }
+                    }
+                }
             }
         }
     }

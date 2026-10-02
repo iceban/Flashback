@@ -4,6 +4,7 @@ import com.moulberry.flashback.Flashback;
 import com.moulberry.flashback.Utils;
 import com.moulberry.flashback.combo_options.AspectRatio;
 import com.moulberry.flashback.combo_options.AudioCodec;
+import com.moulberry.flashback.combo_options.ExportProjection;
 import com.moulberry.flashback.combo_options.Sizing;
 import com.moulberry.flashback.combo_options.VideoCodec;
 import com.moulberry.flashback.combo_options.VideoContainer;
@@ -13,15 +14,15 @@ import com.moulberry.flashback.exporting.ExportJobQueue;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import com.moulberry.flashback.editor.ui.ImGuiHelper;
-import com.moulberry.flashback.exporting.AsyncFileDialogs;
 import com.moulberry.flashback.exporting.ExportJob;
 import com.moulberry.flashback.exporting.ExportSettings;
 import com.moulberry.flashback.playback.ReplayServer;
-import imgui.flashback.ImGui;
-import imgui.flashback.flag.ImGuiWindowFlags;
-import imgui.flashback.type.ImString;
+import com.moulberry.flashback.utils.AsyncFileDialogs;
+import imgui.moulberry90.ImGui;
+import imgui.moulberry90.flag.ImGuiWindowFlags;
+import imgui.moulberry90.type.ImString;
 import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.FileUtil;
+import net.minecraft.util.FileUtil;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.resources.language.I18n;
@@ -85,9 +86,6 @@ public class StartExportWindow {
             }
             if (config.internalExport.framerate == null || config.internalExport.framerate.length != 1) {
                 config.internalExport.framerate = new float[]{60};
-            }
-            if (config.internalExport.selectedVideoEncoder == null || config.internalExport.selectedVideoEncoder.length != 1) {
-                config.internalExport.selectedVideoEncoder = new int[]{0};
             }
             if (config.internalExport.audioCodec == null) {
                 config.internalExport.audioCodec = AudioCodec.AAC;
@@ -161,6 +159,23 @@ public class StartExportWindow {
             }
             ImGuiHelper.inputFloat(I18n.get("flashback.framerate"), config.internalExport.framerate);
 
+            config.internalExport.projection = ImGuiHelper.enumCombo(I18n.get("flashback.projection"), config.internalExport.projection);
+            if (config.internalExport.projection == ExportProjection.ORTHOGRAPHIC) {
+                ImGui.sliderFloat("Ortho Zoom", config.internalExport.orthographicZoom, 0.0f, 10.0f);
+            } else if (config.internalExport.projection == ExportProjection.CUBE_MAP) {
+                int resX = config.internalExport.resolution[0];
+                int resY = config.internalExport.resolution[1];
+                if (resX % 4 != 0 || resY % 3 != 0 || resX != resY*4/3) {
+                    ImGui.text("Warning: Resolution should be 4:3 for cube map export");
+                }
+            } else if (config.internalExport.projection == ExportProjection.EQUIRECTANGULAR) {
+                int resX = config.internalExport.resolution[0];
+                int resY = config.internalExport.resolution[1];
+                if (resX != resY*2) {
+                    ImGui.text("Warning: Resolution should be 2:1 for equirectangular export");
+                }
+            }
+
             if (ImGui.checkbox(I18n.get("flashback.reset_rng"), config.internalExport.resetRng)) {
                 config.internalExport.resetRng = !config.internalExport.resetRng;
             }
@@ -179,6 +194,15 @@ public class StartExportWindow {
                 config.internalExport.noGui = !config.internalExport.noGui;
             }
             ImGuiHelper.tooltip(I18n.get("flashback.no_gui_tooltip"));
+
+            if (ImGui.checkbox(I18n.get("flashback.depth_map"), config.internalExport.depthMap)) {
+                config.internalExport.depthMap = !config.internalExport.depthMap;
+            }
+            ImGuiHelper.tooltip(I18n.get("flashback.depth_map_tooltip"));
+
+            if (config.internalExport.depthMap && config.internalExport.container != VideoContainer.EXR_SEQUENCE) {
+                ImGui.textWrapped("EXR Sequence is recommended for exporting depth maps. Using " + config.internalExport.container.text() + " may result in reduced precision!");
+            }
 
             ImGuiHelper.separatorWithText(I18n.get("flashback.video_options"));
 
@@ -222,8 +246,15 @@ public class StartExportWindow {
 
             ImGui.dummy(0, 10 * ReplayUI.getUiScale());
 
+            boolean isFullscreen = Minecraft.getInstance().getWindow().isExclusiveFullscreen();
+            if (isFullscreen) {
+                ImGui.separator();
+                ImGui.textWrapped(I18n.get("flashback.export_disable_fullscreen"));
+            }
+
             float buttonSize = (ImGui.getContentRegionAvailX() - ImGui.getStyle().getItemSpacingX()) / 2f;
-            if (ImGui.button(I18n.get("flashback.start_export"), buttonSize, ReplayUI.scaleUi(25))) {
+            if (isFullscreen) ImGui.beginDisabled();
+            if (ImGui.button(I18n.get("flashback.start_export"), buttonSize, ReplayUI.scaleUi(25)) && !isFullscreen) {
                 createExportSettings(null, config).thenAccept(settings -> {
                     if (settings != null) {
                         close = true;
@@ -234,16 +265,18 @@ public class StartExportWindow {
                 });
             }
             ImGui.sameLine();
-            if (ImGui.button(I18n.get("flashback.add_to_queue"), buttonSize, ReplayUI.scaleUi(25))) {
+            if (ImGui.button(I18n.get("flashback.add_to_queue"), buttonSize, ReplayUI.scaleUi(25)) && !isFullscreen) {
                 jobName.set(I18n.get("flashback.job_n", ExportJobQueue.count()+1));
                 ImGui.openPopup("QueuedJobName");
             }
+            if (isFullscreen) ImGui.endDisabled();
 
-            if (ImGui.beginPopup("QueuedJobName")) {
+            if (ImGuiHelper.beginPopup("QueuedJobName")) {
                 ImGui.setNextItemWidth(100);
                 ImGui.inputText(I18n.get("flashback.job_name"), jobName);
 
-                if (ImGui.button(I18n.get("flashback.queue_job"))) {
+                if (isFullscreen) ImGui.beginDisabled();
+                if ((ImGui.button(I18n.get("flashback.queue_job")) || ReplayUI.consumeConfirm()) && !isFullscreen) {
                     createExportSettings(ImGuiHelper.getString(jobName), config).thenAccept(settings -> {
                         if (settings != null) {
                             close = true;
@@ -252,8 +285,9 @@ public class StartExportWindow {
                         }
                     });
                 }
+                if (isFullscreen) ImGui.endDisabled();
                 ImGui.sameLine();
-                if (ImGui.button(I18n.get("gui.back"))) {
+                if (ImGui.button(I18n.get("gui.back")) || ReplayUI.consumeCancel()) {
                     ImGui.closeCurrentPopup();
                 }
                 ImGui.endPopup();
@@ -267,6 +301,9 @@ public class StartExportWindow {
         if (editorState != null && !editorState.replayVisuals.renderSky) {
             if (ImGui.checkbox(I18n.get("flashback.transparent_sky"), config.internalExport.transparentBackground)) {
                 config.internalExport.transparentBackground = !config.internalExport.transparentBackground;
+            }
+            if (config.internalExport.transparentBackground && !Minecraft.getInstance().options.improvedTransparency().get()) {
+                ImGui.textWrapped("It is recommended to enable 'Improved Transparency' in the Minecraft video options");
             }
         } else {
             config.internalExport.transparentBackground = false;
@@ -296,13 +333,12 @@ public class StartExportWindow {
 
         config.internalExport.container = ImGuiHelper.enumCombo(I18n.get("flashback.container"), config.internalExport.container, containers);
 
-        if (config.internalExport.container == VideoContainer.PNG_SEQUENCE) {
+        if (config.internalExport.container.isImageSequence()) {
             ImGui.inputText(I18n.get("flashback.filenames"), pngSequenceFormat);
             return;
         }
 
         VideoCodec[] codecs = config.internalExport.container.getSupportedVideoCodecs(config.internalExport.transparentBackground);
-
         if (codecs.length == 0) {
             ImGui.textUnformatted(I18n.get("flashback.no_supported_codecs_found"));
             return;
@@ -316,13 +352,26 @@ public class StartExportWindow {
             VideoCodec newCodec = ImGuiHelper.enumCombo(I18n.get("flashback.codec"), config.internalExport.videoCodec, codecs);
             if (newCodec != config.internalExport.videoCodec) {
                 config.internalExport.videoCodec = newCodec;
-                config.internalExport.selectedVideoEncoder[0] = 0;
+                config.internalExport.selectedVideoEncoder = null;
             }
         }
 
         String[] encoders = config.internalExport.videoCodec.getEncoders();
         if (encoders.length > 1) {
-            ImGuiHelper.combo(I18n.get("flashback.encoder"), config.internalExport.selectedVideoEncoder, encoders);
+            int encoderIndex = 0;
+            for (int i = 0; i < encoders.length; i++) {
+                String encoder = encoders[i];
+                if (encoder.equals(config.internalExport.selectedVideoEncoder)) {
+                    encoderIndex = i;
+                    break;
+                }
+            }
+            int[] encoderIndexArray = new int[]{encoderIndex};
+            ImGuiHelper.combo(I18n.get("flashback.encoder"), encoderIndexArray, encoders);
+            if (encoderIndexArray[0] != encoderIndex) {
+                config.internalExport.selectedVideoEncoder = encoders[encoderIndexArray[0]];
+            }
+
         }
 
         if (config.internalExport.videoCodec != VideoCodec.GIF) {
@@ -395,19 +444,16 @@ public class StartExportWindow {
                 }
 
                 boolean transparent = config.internalExport.transparentBackground && !editorState.replayVisuals.renderSky;
-                String encoder = config.internalExport.videoCodec.getEncoders()[config.internalExport.selectedVideoEncoder[0]];
 
                 VideoCodec useVideoCodec = config.internalExport.videoCodec;
-                AudioCodec useAudioCodec = config.internalExport.audioCodec;
-                boolean shouldRecordAudio = config.internalExport.recordAudio;
-
-                if (config.internalExport.container == VideoContainer.PNG_SEQUENCE) {
-                    useVideoCodec = null;
-                    encoder = null;
-                    shouldRecordAudio = false;
+                VideoCodec[] codecs = config.internalExport.container.getSupportedVideoCodecs(transparent);
+                if (useVideoCodec == null || !Arrays.asList(codecs).contains(useVideoCodec)) {
+                    useVideoCodec = codecs[0];
                 }
+                String encoder = getSelectedEncoderForCodec(config, useVideoCodec);
 
-                if (!shouldRecordAudio) {
+                AudioCodec useAudioCodec = config.internalExport.audioCodec;
+                if (!config.internalExport.recordAudio || config.internalExport.container.getSupportedAudioCodecs().length == 0) {
                     useAudioCodec = null;
                 }
 
@@ -416,8 +462,10 @@ public class StartExportWindow {
                 return new ExportSettings(name, editorState.copy(),
                     player.position(), player.getYRot(), player.getXRot(),
                     config.internalExport.resolution[0], config.internalExport.resolution[1], start, end,
-                    Math.max(1, config.internalExport.framerate[0]), config.internalExport.resetRng, config.internalExport.container, useVideoCodec, encoder, numBitrate, transparent, config.internalExport.ssaa, config.internalExport.noGui,
-                    shouldRecordAudio, config.internalExport.stereoAudio, useAudioCodec,
+                    config.internalExport.projection, config.internalExport.orthographicZoom[0],
+                    Math.max(1, config.internalExport.framerate[0]), config.internalExport.resetRng, config.internalExport.depthMap,
+                    config.internalExport.container, useVideoCodec, encoder, numBitrate, transparent, config.internalExport.ssaa, config.internalExport.noGui,
+                    config.internalExport.stereoAudio, useAudioCodec,
                     path, ImGuiHelper.getString(pngSequenceFormat));
             }
 
@@ -425,13 +473,36 @@ public class StartExportWindow {
         };
 
         String defaultExportPathString = config.internalExport.defaultExportPath;
-        if (config.internalExport.container == VideoContainer.PNG_SEQUENCE) {
+        if (config.internalExport.container.isImageSequence()) {
             return AsyncFileDialogs.openFolderDialog(defaultExportPathString).thenApply(callback);
         } else {
             return AsyncFileDialogs.saveFileDialog(defaultExportPathString, defaultName,
                 config.internalExport.container.extension(), config.internalExport.container.extension()).thenApply(callback);
         }
 
+    }
+
+    private static String getSelectedEncoderForCodec(FlashbackConfigV1 config, VideoCodec useVideoCodec) {
+        String[] validEncoders = useVideoCodec.getEncoders();
+        if (validEncoders == null || validEncoders.length == 0) {
+            return null;
+        }
+
+        String encoder = config.internalExport.selectedVideoEncoder;
+        boolean isValidEncoder = false;
+        for (String validEncoder : validEncoders) {
+            if (validEncoder.equals(encoder)) {
+                isValidEncoder = true;
+                break;
+            }
+        }
+        if (!isValidEncoder) {
+            encoder = null;
+        }
+        if (encoder == null) {
+            encoder = validEncoders[0];
+        }
+        return encoder;
     }
 
     public static @NotNull String getDefaultFilename(@Nullable String name, String extension, FlashbackConfigV1 config) {

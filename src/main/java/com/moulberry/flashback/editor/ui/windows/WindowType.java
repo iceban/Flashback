@@ -3,7 +3,7 @@ package com.moulberry.flashback.editor.ui.windows;
 import com.moulberry.flashback.Flashback;
 import com.moulberry.flashback.configuration.FlashbackConfigV1;
 import com.moulberry.flashback.editor.ui.WindowOpenState;
-import imgui.flashback.type.ImBoolean;
+import imgui.moulberry90.type.ImBoolean;
 
 import java.util.Set;
 
@@ -11,7 +11,8 @@ public enum WindowType {
 
     PLAYER_LIST("player_list", PlayerListWindow::render),
     MOVEMENT("movement", MovementWindow::render),
-    RENDER_FILTER("render_filter", RenderFilterWindow::render);
+    RENDER_FILTER("render_filter", RenderFilterWindow::render),
+    KEYBINDS("keybinds", KeybindsWindow::render);
 
     private final String windowId;
     private final ImGuiWindowRenderer renderMethod;
@@ -21,6 +22,34 @@ public enum WindowType {
     WindowType(String windowId, ImGuiWindowRenderer renderMethod) {
         this.windowId = windowId;
         this.renderMethod = renderMethod;
+    }
+
+    public void setOpen(boolean open) {
+        var config = Flashback.getConfig();
+        var openedWindows = config.internal.openedWindows;
+
+        boolean changed;
+        if (open) {
+            changed = openedWindows.add(this.windowId);
+        } else {
+            changed = openedWindows.remove(this.windowId);
+        }
+
+        if (changed) {
+            config.delayedSaveToDefaultFolder();
+        }
+    }
+
+    public void toggle() {
+        var config = Flashback.getConfig();
+        var openedWindows = config.internal.openedWindows;
+        boolean playerListIsOpen = openedWindows.contains(this.windowId);
+        if (playerListIsOpen) {
+            openedWindows.remove(this.windowId);
+        } else {
+            openedWindows.add(this.windowId);
+        }
+        config.delayedSaveToDefaultFolder();
     }
 
     public static void renderAll() {

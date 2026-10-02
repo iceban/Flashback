@@ -3,7 +3,7 @@ package com.moulberry.flashback.exporting.taskbar;
 import com.moulberry.flashback.Flashback;
 import com.moulberry.flashback.editor.ui.windows.ExportDoneWindow;
 import com.moulberry.flashback.exporting.ExportJob;
-import net.minecraft.Util;
+import net.minecraft.util.Util;
 
 import java.util.concurrent.ForkJoinPool;
 
@@ -34,6 +34,7 @@ public class TaskbarManager {
             started = false;
         });
         taskbarThread.setName("Flashback-Taskbar-Updater");
+        taskbarThread.setDaemon(true);
         taskbarThread.start();
     }
 

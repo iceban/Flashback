@@ -1,5 +1,6 @@
 package com.moulberry.flashback.keyframe.types;
 
+import com.moulberry.flashback.editor.ui.ReplayUI;
 import com.moulberry.flashback.keyframe.KeyframeType;
 import com.moulberry.flashback.keyframe.change.KeyframeChange;
 import com.moulberry.flashback.keyframe.change.KeyframeChangeCameraPosition;
@@ -9,8 +10,8 @@ import com.moulberry.flashback.keyframe.impl.CameraOrbitKeyframe;
 import com.moulberry.flashback.keyframe.impl.FOVKeyframe;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
-import imgui.flashback.ImGui;
-import imgui.flashback.type.ImFloat;
+import imgui.moulberry90.ImGui;
+import imgui.moulberry90.type.ImFloat;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.resources.language.I18n;
 import net.minecraft.world.entity.Entity;
@@ -60,11 +61,11 @@ public class FOVKeyframeType implements KeyframeType<FOVKeyframe> {
 
         return () -> {
             ImGui.sliderFloat(I18n.get("flashback.fov"), fovKeyframeInput, 1f, 110f);
-            if (ImGui.button(I18n.get("flashback.add"))) {
+            if (ImGui.button(I18n.get("flashback.add")) || ReplayUI.consumeConfirm()) {
                 return new FOVKeyframe(fovKeyframeInput[0]);
             }
             ImGui.sameLine();
-            if (ImGui.button(I18n.get("gui.cancel"))) {
+            if (ImGui.button(I18n.get("gui.cancel")) || ReplayUI.consumeCancel()) {
                 ImGui.closeCurrentPopup();
             }
             return null;

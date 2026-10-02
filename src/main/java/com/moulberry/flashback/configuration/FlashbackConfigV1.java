@@ -4,11 +4,13 @@ import com.google.gson.JsonObject;
 import com.moulberry.flashback.Flashback;
 import com.moulberry.flashback.FlashbackGson;
 import com.moulberry.flashback.combo_options.AudioCodec;
+import com.moulberry.flashback.combo_options.ExportProjection;
 import com.moulberry.flashback.combo_options.MarkerColour;
 import com.moulberry.flashback.combo_options.MovementDirection;
 import com.moulberry.flashback.combo_options.RecordingControlsLocation;
 import com.moulberry.flashback.combo_options.VideoCodec;
 import com.moulberry.flashback.combo_options.VideoContainer;
+import com.moulberry.flashback.editor.keybinds.Keybinds;
 import com.moulberry.flashback.keyframe.interpolation.InterpolationType;
 import com.moulberry.flashback.screen.select_replay.ReplaySorting;
 import com.moulberry.lattice.LatticeDynamicFrequency;
@@ -24,9 +26,9 @@ import com.moulberry.lattice.annotation.widget.LatticeWidgetDropdown;
 import com.moulberry.lattice.annotation.widget.LatticeWidgetKeybind;
 import com.moulberry.lattice.annotation.widget.LatticeWidgetMessage;
 import com.moulberry.lattice.annotation.widget.LatticeWidgetSlider;
+import com.moulberry.lattice.annotation.widget.LatticeWidgetTextArea;
 import com.moulberry.lattice.annotation.widget.LatticeWidgetTextField;
 import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.ChatFormatting;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.network.chat.Component;
 
@@ -37,7 +39,9 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public class FlashbackConfigV1 {
@@ -48,6 +52,7 @@ public class FlashbackConfigV1 {
     }
 
     private int configVersion = -1;
+    public Map<String, String> keybinds = new LinkedHashMap<>();
 
     @LatticeCategory(name = "flashback.option.recording_controls")
     public SubcategoryRecordingControls recordingControls = new SubcategoryRecordingControls();
@@ -100,6 +105,15 @@ public class FlashbackConfigV1 {
         public boolean hasSimpleVoiceChat() {
             return FabricLoader.getInstance().isModLoaded("voicechat");
         }
+
+        @LatticeOption(title = "flashback.option.recording.record_bobby_chunks", description = "!!.description")
+        @LatticeWidgetButton
+        @LatticeShowIf(function = "hasBobby")
+        public boolean recordBobbyIntoReplay = false;
+
+        public boolean hasBobby() {
+            return Flashback.isBobbyLoaded;
+        }
     }
 
     @LatticeCategory(name = "flashback.option.exporting")
@@ -114,6 +128,10 @@ public class FlashbackConfigV1 {
         @LatticeIntRange(min = 0, max = 60, clampMin = 0)
         @LatticeWidgetSlider
         public int exportRenderDummyFrames = 0;
+
+        @LatticeOption(title = "flashback.use_system_ffmpeg", description = "!!.description")
+        @LatticeWidgetButton
+        public boolean useSystemFFmpeg = false;
     }
 
     @LatticeCategory(name = "flashback.option.keyframes")
@@ -239,6 +257,15 @@ public class FlashbackConfigV1 {
         }
     }
 
+    @LatticeCategory(name = "flashback.overlay")
+    public SubcategoryOverlay overlay = new SubcategoryOverlay();
+
+    public static class SubcategoryOverlay {
+        @LatticeOption(title = "flashback.overlay.rtc_overlay", description = "!!.description")
+        @LatticeWidgetButton
+        public boolean rtcOverlay = false;
+    }
+
     @LatticeCategory(name = "flashback.advanced")
     public SubcategoryAdvanced advanced = new SubcategoryAdvanced();
 
@@ -257,6 +284,10 @@ public class FlashbackConfigV1 {
         @LatticeOption(title = "flashback.advanced.synchronize_ticking", description = "!!.description")
         @LatticeWidgetButton
         public boolean synchronizeTicking = false;
+
+        @LatticeOption(title = "flashback.advanced.ignored_custom_packets", description = "!!.description")
+        @LatticeWidgetTextArea
+        public String ignoredCustomPayloads = "";
     }
 
     public SubcategoryInternal internal = new SubcategoryInternal();
@@ -277,6 +308,8 @@ public class FlashbackConfigV1 {
 
         public float defaultOverrideFov = 70.0f;
         public boolean enableOverrideFovByDefault = false;
+
+        public boolean nfdUsePortal = true;
     }
 
     public SubcategoryInternalExport internalExport = new SubcategoryInternalExport();
@@ -284,13 +317,16 @@ public class FlashbackConfigV1 {
     public static class SubcategoryInternalExport {
         public int[] resolution = new int[]{1920, 1080};
         public float[] framerate = new float[]{60};
+        public ExportProjection projection = ExportProjection.PERSPECTIVE;
+        public float[] orthographicZoom = new float[]{1.0f};
         public boolean resetRng = false;
         public boolean ssaa = false;
         public boolean noGui = false;
+        public boolean depthMap = false;
 
         public VideoContainer container = null;
         public VideoCodec videoCodec = null;
-        public int[] selectedVideoEncoder = new int[]{0};
+        public String selectedVideoEncoder = null;
         public boolean useMaximumBitrate = false;
 
         public boolean recordAudio = false;
@@ -344,12 +380,14 @@ public class FlashbackConfigV1 {
     }
 
     public void saveToDefaultFolder() {
+        Keybinds.save(this);
+
         Path configFolder = FabricLoader.getInstance().getConfigDir().resolve("flashback");
         this.saveToFolder(configFolder);
         this.saveDelay = 0;
     }
 
-    public synchronized void saveToFolder(Path configFolder) {
+    private synchronized void saveToFolder(Path configFolder) {
         Path primary = configFolder.resolve("flashback.json");
         Path backup = configFolder.resolve(".flashback.json.backup");
 

@@ -21,6 +21,7 @@ public class ReplayVisuals {
     public boolean renderSky = true;
     public float[] skyColour = new float[]{0f, 1f, 0f};
     public boolean renderNametags = true;
+    public boolean renderBeaconBeams = true;
 
     public boolean overrideFog = false;
     public float overrideFogStart = 0.0f;
@@ -57,10 +58,6 @@ public class ReplayVisuals {
     public boolean disableServerResourcePack = false;
 
     public void setFov(float fov) {
-        if (!overrideFov || Math.abs(overrideFovAmount - fov) >= 0.01) {
-            Minecraft.getInstance().levelRenderer.needsUpdate();
-        }
-
         overrideFov = true;
         overrideFovAmount = fov;
     }

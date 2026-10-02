@@ -16,6 +16,9 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import net.fabricmc.fabric.api.networking.v1.context.PacketContext;
+import net.fabricmc.fabric.api.networking.v1.context.PacketContextProvider;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.RegistryAccess;
@@ -29,9 +32,11 @@ import net.minecraft.network.protocol.configuration.ClientConfigurationPacketLis
 import net.minecraft.network.protocol.game.ClientGamePacketListener;
 import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
 import net.minecraft.network.protocol.game.ClientboundLoginPacket;
+import net.minecraft.util.Util;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -46,6 +51,8 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 
 public class AsyncReplaySaver {
+
+    public static final ThreadLocal<Boolean> WRITING_PACKET = ThreadLocal.withInitial(() -> false);
 
     private final ArrayBlockingQueue<Consumer<ReplayWriter>> tasks = new ArrayBlockingQueue<>(1024);
     private final AtomicReference<Throwable> error = new AtomicReference<>(null);
@@ -72,7 +79,12 @@ public class AsyncReplaySaver {
                         }
                     }
 
-                    task.accept(replayWriter);
+                    var context = PacketContext.get();
+                    if (context == null && Minecraft.getInstance().player instanceof PacketContextProvider provider) {
+                        PacketContext.runWithContext(provider, () -> task.accept(replayWriter));
+                    } else {
+                        task.accept(replayWriter);
+                    }
                 } catch (Throwable t) {
                     this.error.set(t);
                     this.hasStopped.set(true);
@@ -97,7 +109,7 @@ public class AsyncReplaySaver {
         }
     }
 
-    private final Int2ObjectMap<List<CachedChunkPacket>> cachedChunkPackets = new Int2ObjectOpenHashMap<>();
+    private final Long2ObjectOpenHashMap<List<CachedChunkPacket>> cachedChunkPackets = new Long2ObjectOpenHashMap<>();
     private int totalWrittenChunkPackets = 0;
 
     public void writeGamePackets(StreamCodec<ByteBuf, Packet<? super ClientGamePacketListener>> gamePacketCodec,
@@ -114,21 +126,14 @@ public class AsyncReplaySaver {
                     int index = -1;
 
                     CachedChunkPacket cachedChunkPacket = new CachedChunkPacket(levelChunkPacket, -1);
-                    int hashCode = cachedChunkPacket.hashCode();
-
                     boolean add = true;
 
-                    List<CachedChunkPacket> cached = this.cachedChunkPackets.get(hashCode);
-                    if (cached == null) {
-                        cached = new ArrayList<>();
-                        this.cachedChunkPackets.put(hashCode, cached);
-                    } else {
-                        for (CachedChunkPacket existingChunkPacket : cached) {
-                            if (existingChunkPacket.equals(cachedChunkPacket)) {
-                                add = false;
-                                index = existingChunkPacket.index;
-                                break;
-                            }
+                    List<CachedChunkPacket> cached = this.cachedChunkPackets.computeIfAbsent(cachedChunkPacket.longHashCode, (l)->new ArrayList<>());
+                    for (CachedChunkPacket existingChunkPacket : cached) {
+                        if (existingChunkPacket.equals(cachedChunkPacket)) {
+                            add = false;
+                            index = existingChunkPacket.index;
+                            break;
                         }
                     }
 
@@ -175,25 +180,31 @@ public class AsyncReplaySaver {
                     continue;
                 }
 
-                if (packet instanceof ClientboundCustomPayloadPacket) {
-                    // Some mods might throw errors when encoding packets, so this
-                    // attempts to encode the packet before starting the action
-                    try {
-                        if (customPayloadTempBuffer == null) {
-                            customPayloadTempBuffer = new RegistryFriendlyByteBuf(Unpooled.buffer(), writer.registryAccess());
-                        }
+                try {
+                    WRITING_PACKET.set(true);
 
-                        customPayloadTempBuffer.clear();
-                        gamePacketCodec.encode(customPayloadTempBuffer, packet);
+                    if (packet instanceof ClientboundCustomPayloadPacket) {
+                        // Some mods might throw errors when encoding packets, so this
+                        // attempts to encode the packet before starting the action
+                        try {
+                            if (customPayloadTempBuffer == null) {
+                                customPayloadTempBuffer = new RegistryFriendlyByteBuf(Unpooled.buffer(), writer.registryAccess());
+                            }
 
+                            customPayloadTempBuffer.clear();
+                            gamePacketCodec.encode(customPayloadTempBuffer, packet);
+
+                            writer.startAction(ActionGamePacket.INSTANCE);
+                            writer.friendlyByteBuf().writeBytes(customPayloadTempBuffer);
+                            writer.finishAction(ActionGamePacket.INSTANCE);
+                        } catch (Exception ignored) {}
+                    } else {
                         writer.startAction(ActionGamePacket.INSTANCE);
-                        writer.friendlyByteBuf().writeBytes(customPayloadTempBuffer);
+                        gamePacketCodec.encode(writer.friendlyByteBuf(), packet);
                         writer.finishAction(ActionGamePacket.INSTANCE);
-                    } catch (Exception ignored) {}
-                } else {
-                    writer.startAction(ActionGamePacket.INSTANCE);
-                    gamePacketCodec.encode(writer.friendlyByteBuf(), packet);
-                    writer.finishAction(ActionGamePacket.INSTANCE);
+                    }
+                } finally {
+                    WRITING_PACKET.set(false);
                 }
             }
 
@@ -214,7 +225,15 @@ public class AsyncReplaySaver {
 
             Path levelChunkCachePath = this.recordFolder.resolve("level_chunk_caches").resolve(""+index);
             Files.createDirectories(levelChunkCachePath.getParent());
-            Files.write(levelChunkCachePath, bytes, StandardOpenOption.CREATE, StandardOpenOption.APPEND, StandardOpenOption.SYNC);
+
+            OpenOption[] options;
+            if (Util.getPlatform() == Util.OS.LINUX) {
+                options = new OpenOption[]{StandardOpenOption.CREATE, StandardOpenOption.APPEND};
+            } else {
+                options = new OpenOption[]{StandardOpenOption.CREATE, StandardOpenOption.APPEND, StandardOpenOption.SYNC};
+            }
+
+            Files.write(levelChunkCachePath, bytes, options);
         } catch (IOException e) {
             SneakyThrow.sneakyThrow(e);
         }

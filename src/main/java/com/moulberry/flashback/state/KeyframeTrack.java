@@ -12,7 +12,7 @@ import com.moulberry.flashback.keyframe.interpolation.InterpolationType;
 import com.moulberry.flashback.keyframe.interpolation.SidedInterpolationType;
 import com.moulberry.flashback.keyframe.types.AudioKeyframeType;
 import com.moulberry.flashback.keyframe.types.TimelapseKeyframeType;
-import imgui.flashback.type.ImString;
+import imgui.moulberry90.type.ImString;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.HashMap;
@@ -210,11 +210,6 @@ public class KeyframeTrack {
 
         Map.Entry<Integer, Keyframe> lowerEntry = keyframeTimes.floorEntry((int) tick);
         Map.Entry<Integer, Keyframe> ceilEntry = keyframeTimes.ceilingEntry(((int) tick) + 1);
-
-        if (ceilEntry == null && lowerEntry != null && lowerEntry.getKey() == (int) tick) {
-            ceilEntry = lowerEntry;
-            lowerEntry = keyframeTimes.floorEntry((int) tick - 1);
-        }
 
         if (lowerEntry != null && ceilEntry != null) {
             int lowerTicks = ((TimelapseKeyframe) lowerEntry.getValue()).ticks;

@@ -15,6 +15,10 @@ import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.player.PlayerModelPart;
+import net.minecraft.world.level.GameType;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 
@@ -46,6 +50,8 @@ public class EditorState {
 
     public UUID audioSourceEntity = null;
     public Set<UUID> hideDuringExport = new HashSet<>();
+    public boolean hideAllSpectators = false;
+    public Set<UUID> muteVoice = new HashSet<>();
     public Set<UUID> hideNametags = new HashSet<>();
     public Map<UUID, GameProfile> skinOverride = new HashMap<>();
     public Map<UUID, FilePlayerSkin> skinOverrideFromFile = new HashMap<>();
@@ -57,6 +63,8 @@ public class EditorState {
     public Set<UUID> hideCape = new HashSet<>();
     public Set<String> filteredEntities = new HashSet<>();
     public Set<String> filteredParticles = new HashSet<>();
+    public Map<UUID, EnumSet<EquipmentSlot>> hiddenEquipment = new HashMap<>();
+    public Map<UUID, EnumSet<PlayerModelPart>> hiddenModelParts = new HashMap<>();
 
     public EditorState() {
         this.scenes = new ArrayList<>();
@@ -136,7 +144,9 @@ public class EditorState {
 
         Camera dummyCamera = new Camera();
         dummyCamera.eyeHeight = sourceEntity.getEyeHeight();
-        dummyCamera.setup(level, sourceEntity, false, false, 1.0f);
+        dummyCamera.setLevel(level);
+        dummyCamera.setEntity(sourceEntity);
+        dummyCamera.update(Minecraft.getInstance().deltaTracker);
         return dummyCamera;
     }
 
@@ -190,13 +200,34 @@ public class EditorState {
         return editorState;
     }
 
+    public boolean isEntityHidden(Entity entity) {
+        if (this.hideAllSpectators && entity instanceof Player player && player.gameMode() == GameType.SPECTATOR) {
+            return true;
+        } else {
+            return this.hideDuringExport.contains(entity.getUUID());
+        }
+    }
+
+    public boolean maybeHasHiddenEntities() {
+        return this.hideAllSpectators || !this.hideDuringExport.isEmpty();
+    }
+
     public void applyKeyframes(KeyframeHandler keyframeHandler, float tick) {
+        this.applyKeyframes(keyframeHandler, tick, 0);
+    }
+
+    @ApiStatus.Internal
+    public void applyKeyframes(KeyframeHandler keyframeHandler, float tick, long stamp) {
         Set<Class<? extends KeyframeChange>> applied = new HashSet<>();
         Map<Class<? extends KeyframeChange>, KeyframeTrack> maybeApplyLastTick = new HashMap<>();
 
         updateRealtimeMappingsIfNeeded();
 
-        long stamp = this.sceneLock.readLock();
+        boolean unlock = false;
+        if (!this.sceneLock.validate(stamp)) {
+            stamp = this.sceneLock.readLock();
+            unlock = true;
+        }
         try {
             for (KeyframeTrack keyframeTrack : this.currentScene().keyframeTracks) {
                 // Ignore lines that are disabled
@@ -256,7 +287,9 @@ public class EditorState {
                 }
             }
         } finally {
-            this.sceneLock.unlock(stamp);
+            if (unlock) {
+                this.sceneLock.unlock(stamp);
+            }
         }
     }
 

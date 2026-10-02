@@ -17,7 +17,7 @@ import com.moulberry.flashback.state.KeyframeTrack;
 import com.moulberry.flashback.visuals.ReplayVisuals;
 import com.moulberry.flashback.combo_options.Sizing;
 import com.moulberry.flashback.editor.ui.ImGuiHelper;
-import imgui.flashback.ImGui;
+import imgui.moulberry90.ImGui;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.resources.language.I18n;
 
@@ -104,7 +104,7 @@ public class VisualsWindow {
                 ImGui.sameLine();
                 ImGui.textUnformatted(I18n.get("flashback.visuals.world.sky_colour"));
 
-                if (ImGui.beginPopup("##EditSkyColour")) {
+                if (ImGuiHelper.beginPopup("##EditSkyColour")) {
                     ImGui.colorPicker3(I18n.get("flashback.visuals.world.sky_colour"), visuals.skyColour);
                     ImGui.endPopup();
                 }
@@ -112,6 +112,11 @@ public class VisualsWindow {
 
             if (ImGui.checkbox(I18n.get("flashback.visuals.world.render_nametags"), visuals.renderNametags)) {
                 visuals.renderNametags = !visuals.renderNametags;
+                editorState.markDirty();
+            }
+
+            if (ImGui.checkbox(I18n.get("flashback.visuals.world.render_beacon_beams"), visuals.renderBeaconBeams)) {
+                visuals.renderBeaconBeams = !visuals.renderBeaconBeams;
                 editorState.markDirty();
             }
 
@@ -147,7 +152,7 @@ public class VisualsWindow {
                 ImGui.sameLine();
                 ImGui.textUnformatted(I18n.get("flashback.visuals.overrides.fog_colour"));
 
-                if (ImGui.beginPopup("##EditFogColour")) {
+                if (ImGuiHelper.beginPopup("##EditFogColour")) {
                     ImGui.colorPicker3(I18n.get("flashback.visuals.overrides.fog_colour"), visuals.fogColour);
                     ImGui.endPopup();
                 }
@@ -156,7 +161,6 @@ public class VisualsWindow {
             // FOV
             if (ImGui.checkbox(I18n.get("flashback.visuals.overrides.override_fov"), visuals.overrideFov)) {
                 visuals.overrideFov = !visuals.overrideFov;
-                Minecraft.getInstance().levelRenderer.needsUpdate();
                 editorState.markDirty();
             }
             if (visuals.overrideFov) {
@@ -182,7 +186,7 @@ public class VisualsWindow {
                 if (visuals.overrideTimeOfDay >= 0) {
                     visuals.overrideTimeOfDay = -1;
                 } else {
-                    visuals.overrideTimeOfDay = (int)(Minecraft.getInstance().level.getDayTime() % 24000);
+                    visuals.overrideTimeOfDay = (int)(Minecraft.getInstance().level.getDefaultClockTime() % 24000);
                 }
                 editorState.markDirty();
             }
@@ -279,14 +283,12 @@ public class VisualsWindow {
             // Camera Roll
             if (ImGui.checkbox(I18n.get("flashback.camera_roll"), visuals.overrideRoll)) {
                 visuals.overrideRoll = !visuals.overrideRoll;
-                Minecraft.getInstance().levelRenderer.needsUpdate();
                 editorState.markDirty();
             }
             if (visuals.overrideRoll) {
                 floatBuffer[0] = visuals.overrideRollAmount;
                 if (ImGui.sliderFloat(I18n.get("flashback.roll"), floatBuffer, -180.0f, 180.0f, "%.1f")) {
                     visuals.overrideRollAmount = floatBuffer[0];
-                    Minecraft.getInstance().levelRenderer.needsUpdate();
                     editorState.markDirty();
                 }
             }
@@ -303,6 +305,15 @@ public class VisualsWindow {
             if (ImGui.checkbox(I18n.get("flashback.center_guide"), visuals.centerGuide)) {
                 visuals.centerGuide = !visuals.centerGuide;
                 editorState.markDirty();
+            }
+
+            if (replayServer.hasRtcData()) {
+                var config = Flashback.getConfig();
+                if (ImGui.checkbox(I18n.get("flashback.overlay.rtc_overlay"), config.overlay.rtcOverlay)) {
+                    config.overlay.rtcOverlay = !config.overlay.rtcOverlay;
+                    config.delayedSaveToDefaultFolder();
+                }
+                ImGui.setItemTooltip(I18n.get("flashback.overlay.rtc_overlay.description"));
             }
 
             if (ImGui.checkbox(I18n.get("flashback.camera_path"), visuals.cameraPath)) {

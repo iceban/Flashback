@@ -1,6 +1,5 @@
 package com.moulberry.flashback.keyframe.types;
 
-import com.moulberry.flashback.exporting.AsyncFileDialogs;
 import com.moulberry.flashback.keyframe.Keyframe;
 import com.moulberry.flashback.keyframe.KeyframeType;
 import com.moulberry.flashback.keyframe.change.KeyframeChange;
@@ -8,7 +7,8 @@ import com.moulberry.flashback.keyframe.change.KeyframeChangePlayAudio;
 import com.moulberry.flashback.keyframe.handler.KeyframeHandler;
 import com.moulberry.flashback.keyframe.handler.MinecraftKeyframeHandler;
 import com.moulberry.flashback.keyframe.impl.AudioKeyframe;
-import imgui.flashback.ImGui;
+import com.moulberry.flashback.utils.AsyncFileDialogs;
+import imgui.moulberry90.ImGui;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.resources.language.I18n;
 import org.jetbrains.annotations.Nullable;

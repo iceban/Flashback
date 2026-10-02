@@ -7,15 +7,11 @@ import com.moulberry.flashback.action.Action;
 import com.moulberry.flashback.action.ActionLevelChunkCached;
 import com.moulberry.flashback.action.ActionRegistry;
 import com.moulberry.flashback.playback.ReplayChunkCache;
-import com.moulberry.flashback.playback.ReplayServer;
 import com.moulberry.flashback.record.FlashbackChunkMeta;
 import com.moulberry.flashback.record.FlashbackMeta;
 import com.moulberry.flashback.record.ReplayMarker;
-import com.replaymod.replaystudio.lib.viaversion.libs.fastutil.ints.Int2ObjectMap;
-import com.replaymod.replaystudio.lib.viaversion.libs.fastutil.ints.Int2ObjectOpenHashMap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import io.netty.buffer.UnpooledDirectByteBuf;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
 import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
 import net.minecraft.core.RegistryAccess;
@@ -26,14 +22,13 @@ import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientGamePacketListener;
 import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
 import net.minecraft.network.protocol.game.GameProtocols;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 
 import java.io.BufferedOutputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.DirectoryStream;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
@@ -191,8 +186,8 @@ public class ReplayCombiner {
                 int actions = inputBuf.readVarInt();
                 outputBuf.writeVarInt(actions);
                 for (int i = 0; i < actions; i++) {
-                    ResourceLocation actionName = inputBuf.readResourceLocation();
-                    outputBuf.writeResourceLocation(actionName);
+                    Identifier actionName = inputBuf.readIdentifier();
+                    outputBuf.writeIdentifier(actionName);
 
                     Action action = ActionRegistry.getAction(actionName);
 

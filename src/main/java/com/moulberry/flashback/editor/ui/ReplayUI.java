@@ -1,6 +1,7 @@
 package com.moulberry.flashback.editor.ui;
 
-import com.mojang.blaze3d.opengl.GlStateManager;
+import com.mojang.blaze3d.pipeline.RenderTarget;
+import com.mojang.blaze3d.platform.InputConstants;
 import com.mojang.blaze3d.platform.Window;
 import com.moulberry.flashback.Flashback;
 import com.moulberry.flashback.configuration.FlashbackConfigV1;
@@ -10,6 +11,7 @@ import com.moulberry.flashback.editor.ui.windows.ExportScreenshotWindow;
 import com.moulberry.flashback.editor.ui.windows.PreferencesWindow;
 import com.moulberry.flashback.editor.ui.windows.SelectedEntityPopup;
 import com.moulberry.flashback.editor.ui.windows.WindowType;
+import com.moulberry.flashback.ext.WindowExt;
 import com.moulberry.flashback.playback.ReplayServer;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
@@ -18,10 +20,9 @@ import com.moulberry.flashback.editor.ui.windows.MainMenuBar;
 import com.moulberry.flashback.editor.ui.windows.StartExportWindow;
 import com.moulberry.flashback.editor.ui.windows.TimelineWindow;
 import com.moulberry.flashback.editor.ui.windows.VisualsWindow;
-import imgui.flashback.*;
-import imgui.flashback.flag.*;
-import imgui.flashback.internal.ImGuiContext;
-import imgui.flashback.type.ImInt;
+import imgui.moulberry90.*;
+import imgui.moulberry90.flag.*;
+import imgui.moulberry90.internal.ImGuiContext;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.LevelLoadingScreen;
@@ -45,23 +46,21 @@ import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
 import org.joml.Vector4f;
-import org.lwjgl.glfw.GLFW;
+import org.lwjgl.sdl.SDLKeyboard;
+import org.lwjgl.sdl.SDLScancode;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
 
-import static org.lwjgl.opengl.GL11.*;
-
 public class ReplayUI {
 
-    public static final CustomImGuiImplGlfw imguiGlfw = new CustomImGuiImplGlfw();
-    private static final CustomImGuiImplGl3 imguiGl3 = new CustomImGuiImplGl3();
+    public static final CustomImGuiWindower imguiWindower = new CustomImGuiWindowerSdl();
+    public static final CustomImGuiImplB3D imguiRenderer = new CustomImGuiImplB3D();
     private static boolean initialized = false;
 
     private static boolean isFrameFocused = false;
@@ -84,8 +83,6 @@ public class ReplayUI {
     public static ImFont font = null;
 
     private static String languageCode = null;
-    private static boolean wasNavClose = false;
-    private static boolean navClose = false;
 
     private static float globalScale = 1.0f;
     public static float newGlobalScale = 1.0f;
@@ -105,8 +102,13 @@ public class ReplayUI {
     private static int displayingTip = -1;
     private static boolean dontShowTipsOnStartupCheckbox = false;
 
+    private static boolean cancelPressed = false;
+    private static boolean confirmPressed = false;
+
     public static boolean shownRegistryErrorWarning = false;
     public static boolean shownPlayerSpawnErrorWarning = false;
+
+    public static RenderTarget compositeOnTop = null;
 
     public static void init() {
         if (initialized) {
@@ -158,10 +160,10 @@ public class ReplayUI {
         imGuiIO.addConfigFlags(ImGuiConfigFlags.DockingEnable);
         imGuiIO.setConfigMacOSXBehaviors(InputQuirks.REPLACE_CTRL_KEY_WITH_CMD_KEY);
 
-        imguiGlfw.init(Minecraft.getInstance().getWindow().handle(), true);
-        imguiGl3.init("#version 150");
+        imguiWindower.init(Minecraft.getInstance().getWindow().handle());
+        imguiRenderer.init();
 
-        contentScale = imguiGlfw.contentScale;
+        contentScale = imguiWindower.getContentScale();
         initFonts(languageCode);
 
         ReplayUIDefaults.applyStyle(ImGui.getStyle());
@@ -227,17 +229,18 @@ public class ReplayUI {
         rangesBuilder.addChar('\u2193'); // Down Arrow
 
         // Make sure every printable key on the keyboard is present
-        for (int i = GLFW.GLFW_KEY_SPACE; i <= GLFW.GLFW_KEY_LAST; i++) {
-            int scancode = GLFW.glfwGetKeyScancode(i);
-            if (scancode != -1) {
-                String key = GLFW.glfwGetKeyName(i, -1);
-                if (key != null) {
-                    rangesBuilder.addText(key);
-                    rangesBuilder.addText(key.toLowerCase());
-                    rangesBuilder.addText(key.toUpperCase());
-                    rangesBuilder.addText(key.toLowerCase(Locale.ROOT));
-                    rangesBuilder.addText(key.toUpperCase(Locale.ROOT));
-                }
+        for (int i = SDLScancode.SDL_SCANCODE_A; i < SDLScancode.SDL_SCANCODE_COUNT; i++) {
+            int keycode = SDLKeyboard.SDL_GetKeyFromScancode(i, (short)0, false);
+            if (keycode == 0) {
+                continue;
+            }
+            String key = SDLKeyboard.SDL_GetKeyName(keycode);
+            if (key != null && !key.isEmpty()) {
+                rangesBuilder.addText(key);
+                rangesBuilder.addText(key.toLowerCase());
+                rangesBuilder.addText(key.toUpperCase());
+                rangesBuilder.addText(key.toLowerCase(Locale.ROOT));
+                rangesBuilder.addText(key.toUpperCase(Locale.ROOT));
             }
         }
 
@@ -277,7 +280,7 @@ public class ReplayUI {
         fontConfig.setMergeMode(false);
 
         fonts.build();
-        imguiGl3.updateFontsTexture();
+        imguiRenderer.updateFontsTexture();
 
         fontConfig.destroy();
         fonts.clearTexData();
@@ -316,12 +319,14 @@ public class ReplayUI {
         builder.addChar('\ue55f');
         builder.addChar('\uea44');
         builder.addChar('\ue3a1');
+        builder.addChar('\ue41a'); // Rotate CW
+        builder.addChar('\ue419'); // Rotate CCW
         return builder.buildRanges();
     }
 
     private static byte[] loadFont(String name) {
         try {
-            var resource = Minecraft.getInstance().getResourceManager().getResource(Flashback.createResourceLocation(name));
+            var resource = Minecraft.getInstance().getResourceManager().getResource(Flashback.createIdentifier(name));
             if (resource.isEmpty()) throw new MissingResourceException("Missing font: " + name, "Font", "");
             try (InputStream is = resource.get().open()) {
                 return is.readAllBytes();
@@ -404,8 +409,16 @@ public class ReplayUI {
         return isActive() && uuid.equals(selectedEntity);
     }
 
+    public static UUID getSelectedEntity() {
+        return selectedEntity;
+    }
+
+    private static void setSelectedEntity(UUID uuid) {
+        selectedEntity = uuid;
+    }
+
     public static boolean isMovingCamera() {
-        return imguiGlfw.isGrabbed() && imguiGlfw.getMouseHandledBy() == CustomImGuiImplGlfw.MouseHandledBy.GAME;
+        return imguiWindower.isGrabbed() && imguiWindower.getMouseHandledBy() == MouseHandledBy.GAME;
     }
 
     public static void setInfoOverlay(String text) {
@@ -416,16 +429,6 @@ public class ReplayUI {
     public synchronized static void setInfoOverlayShort(String text) {
         infoOverlayText = text;
         infoOverlayEndMillis = System.currentTimeMillis() + 1000;
-    }
-
-    public static void setupMainViewport() {
-        var window = Minecraft.getInstance().getWindow();
-
-        int frameBottom = window.height - (frameY + frameHeight);
-        GlStateManager._viewport(frameX * window.getWidth() / window.getScreenWidth(),
-            frameBottom * window.getHeight() / window.getScreenHeight(),
-            Math.max(1, frameWidth * window.getWidth() / window.getScreenWidth()),
-            Math.max(1, frameHeight * window.getHeight() / window.getScreenHeight()));
     }
 
     public static float getUiScale() {
@@ -461,7 +464,7 @@ public class ReplayUI {
             return false;
         }
 
-        if (Minecraft.getInstance().options.hideGui) {
+        if (Minecraft.getInstance().gui.hud.isHidden()) {
             return false;
         }
 
@@ -470,7 +473,7 @@ public class ReplayUI {
         if (gameMode.getPlayerMode() != GameType.SPECTATOR) return false;
         if (Minecraft.getInstance().level == null) return false;
         if (Minecraft.getInstance().player == null) return false;
-        if (Minecraft.getInstance().getOverlay() != null) return false;
+        if (Minecraft.getInstance().gui.overlay() != null) return false;
         return true;
     }
 
@@ -490,14 +493,14 @@ public class ReplayUI {
         // Recalculate the size of the gameplay window
         Window window = Minecraft.getInstance().getWindow();
         if (window.getWidth() > 0 && window.getWidth() <= 16384 && window.getHeight() > 0 && window.getHeight() <= 16384) {
-            Minecraft.getInstance().resizeDisplay();
+            ((WindowExt)(Object)Minecraft.getInstance().getWindow()).flashback$updateScaledFramebuffer(true);
         }
-        imguiGlfw.ungrab();
+        imguiWindower.ungrab();
 
         if (!activeLastFrame) {
             // Make sure the vanilla grab state is correct
             if (Minecraft.getInstance().gameMode != null) {
-                if (Minecraft.getInstance().screen == null) {
+                if (Minecraft.getInstance().gui.screen() == null) {
                     Minecraft.getInstance().mouseHandler.releaseMouse();
                     Minecraft.getInstance().mouseHandler.grabMouse();
                 } else {
@@ -508,24 +511,22 @@ public class ReplayUI {
             }
         } else {
             // Forcefully ungrab the cursor
-            long handle = ImGui.getMainViewport().getPlatformHandle();
-            if (GLFW.glfwGetInputMode(handle, GLFW.GLFW_CURSOR) != GLFW.GLFW_CURSOR_NORMAL) {
-                GLFW.glfwSetInputMode(handle, GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_NORMAL);
-                GLFW.glfwSetCursorPos(handle, ImGui.getMainViewport().getSizeX()/2f, ImGui.getMainViewport().getSizeY()/2f);
-            }
+            InputConstants.releaseMouse(Minecraft.getInstance().getWindow(), ImGui.getMainViewport().getSizeX()/2f, ImGui.getMainViewport().getSizeY()/2f);
         }
+    }
 
-        imguiGlfw.setViewportWindowsHidden(!activeLastFrame);
+    public static boolean isImGuiContextActive() {
+        return imGuiContext != null && imGuiContext.ptr == ImGui.getCurrentContext().ptr;
     }
 
     public static void drawOverlay() {
-        if (!initialized && Minecraft.getInstance().getOverlay() instanceof LoadingOverlay) {
+        compositeOnTop = null;
+
+        if (!initialized && Minecraft.getInstance().gui.overlay() instanceof LoadingOverlay) {
             return;
         }
 
         init();
-
-        GlStateManager._disableColorLogicOp(); // Needed on 1.21.5 because vanilla doesn't reset this after rendering
 
         long oldImGuiContext = ImGui.getCurrentContext().ptr;
         ImGui.setCurrentContext(imGuiContext);
@@ -548,17 +549,17 @@ public class ReplayUI {
             throw new IllegalStateException("Tried to use EditorUI while it was not initialized");
         }
 
-        if (Minecraft.getInstance().screen instanceof ProgressScreen || Minecraft.getInstance().screen instanceof LevelLoadingScreen) {
+        if (Minecraft.getInstance().gui.screen() instanceof ProgressScreen || Minecraft.getInstance().gui.screen() instanceof LevelLoadingScreen) {
             return;
         }
 
         if (!isActiveInternal()) {
             transitionActiveState(false);
-            imguiGlfw.updateReleaseAllKeys(true);
+            imguiWindower.setReleaseAllKeys(true);
             focusMainWindowCounter = 5;
             return;
         } else {
-            imguiGlfw.updateReleaseAllKeys(false);
+            imguiWindower.setReleaseAllKeys(false);
         }
 
         if (!ImGui.isAnyMouseDown()) {
@@ -566,7 +567,7 @@ public class ReplayUI {
             if (newGlobalScale < 0.25) newGlobalScale = 0.25f;
             if (newGlobalScale > 4) newGlobalScale = 4f;
 
-            float newContentScale = ((int)(imguiGlfw.contentScale * 16))/16f;
+            float newContentScale = ((int)(imguiWindower.getContentScale() * 16))/16f;
             if (newContentScale < 0.125) newContentScale = 0.125f;
             if (newContentScale > 8) newContentScale = 8f;
 
@@ -580,18 +581,13 @@ public class ReplayUI {
             }
         }
 
-        imguiGlfw.newFrame();
-        imguiGl3.newFrame();
+        imguiWindower.newFrame();
         ImGui.newFrame();
 
-        hasAnyPopupOpen = ImGui.isPopupOpen("", ImGuiPopupFlags.AnyPopup);
+        confirmPressed = ImGui.isKeyPressed(ImGuiKey.Enter);
+        cancelPressed = ImGui.isKeyPressed(ImGuiKey.Escape);
 
-        navClose = hasAnyPopupOpen && ImGui.isKeyPressed(ImGuiKey.Escape);
-        if (wasNavClose != navClose) {
-            wasNavClose = navClose;
-        } else if (wasNavClose) {
-            navClose = false;
-        }
+        hasAnyPopupOpen = ImGui.isPopupOpen("", ImGuiPopupFlags.AnyPopup);
 
         if (hasAnyPopupOpen) {
             ReplayUI.getIO().addConfigFlags(ImGuiConfigFlags.NavEnableKeyboard);
@@ -607,7 +603,7 @@ public class ReplayUI {
             ImGuiHelper.endFrame();
 
             transitionActiveState(false);
-            imguiGlfw.updateReleaseAllKeys(true);
+            imguiWindower.setReleaseAllKeys(true);
             focusMainWindowCounter = 5;
             return;
         }
@@ -615,7 +611,7 @@ public class ReplayUI {
         // Setup docking
         ImGui.setNextWindowBgAlpha(0);
         int mainDock = ImGui.dockSpaceOverViewport(0, ImGui.getMainViewport(), ImGuiDockNodeFlags.NoDockingInCentralNode);
-        imgui.flashback.internal.ImGui.dockBuilderGetCentralNode(mainDock).addLocalFlags(imgui.flashback.internal.flag.ImGuiDockNodeFlags.NoTabBar);
+        imgui.moulberry90.internal.ImGui.dockBuilderGetCentralNode(mainDock).addLocalFlags(imgui.moulberry90.internal.flag.ImGuiDockNodeFlags.NoTabBar);
 
         isFrameFocused = false;
         isFrameHovered = false;
@@ -717,7 +713,7 @@ public class ReplayUI {
                 frameHeight = Minecraft.getInstance().getWindow().getScreenHeight();
             }
 
-            if (Minecraft.getInstance().screen == null && Minecraft.getInstance().getOverlay() == null) {
+            if (Minecraft.getInstance().gui.screen() == null && Minecraft.getInstance().gui.overlay() == null) {
                 if (editorState != null && editorState.replayVisuals.ruleOfThirdsGuide) {
                     ImDrawList drawList = ImGui.getBackgroundDrawList();
                     drawList.removeFlags(ImDrawListFlags.AntiAliasedLines);
@@ -778,7 +774,7 @@ public class ReplayUI {
                         ImGui.sameLine();
                         ImGui.dummy(scaleUi(20), 0);
                         ImGui.sameLine();
-                        if (ImGui.button(I18n.get("flashback.close"))) {
+                        if (ImGui.button(I18n.get("flashback.close")) || (ImGui.isWindowFocused() && ReplayUI.consumeCancel())) {
                             if (dontShowTipsOnStartupCheckbox) {
                                 FlashbackConfigV1 config = Flashback.getConfig();
                                 config.internal.showTipOfTheDay = false;
@@ -814,11 +810,11 @@ public class ReplayUI {
             if (selectedEntity != null) {
                 Entity entity = Minecraft.getInstance().level.getEntities().get(selectedEntity);
                 if (entity == null || editorState == null) {
-                    selectedEntity = null;
+                    setSelectedEntity(null);
                 } else if (entity instanceof Player && !editorState.replayVisuals.renderPlayers) {
-                    selectedEntity = null;
+                    setSelectedEntity(null);
                 } else if (!(entity instanceof Player) && !editorState.replayVisuals.renderEntities) {
-                    selectedEntity = null;
+                    setSelectedEntity(null);
                 } else {
                     if (openSelectedEntityPopup) {
                         ImGui.openPopup("###EntityPopup");
@@ -831,7 +827,7 @@ public class ReplayUI {
                     }
 
                     if (!ImGui.isPopupOpen("###EntityPopup")) {
-                        selectedEntity = null;
+                        setSelectedEntity(null);
                     }
                 }
             }
@@ -841,7 +837,7 @@ public class ReplayUI {
             if (ImGui.isWindowHovered() && ReplayUI.getIO().getMousePosY() > ImGui.getWindowPosY()) {
                 isFrameHovered = true;
 
-                if (Minecraft.getInstance().screen != null) {
+                if (Minecraft.getInstance().gui.screen() != null) {
                     ImGui.setNextFrameWantCaptureMouse(false);
                 } else {
                     boolean isMovingCamera = isMovingCamera();
@@ -917,21 +913,20 @@ public class ReplayUI {
         ImGui.render();
         ImGuiHelper.endFrame();
 
-        long ctx = GLFW.glfwGetCurrentContext();
-        ImGui.updatePlatformWindows();
-        ImGui.renderPlatformWindowsDefault();
-        GLFW.glfwMakeContextCurrent(ctx);
-
         var drawData = ImGui.getDrawData();
         if (drawData != null) {
-            imguiGl3.renderDrawData(drawData);
+            compositeOnTop = imguiRenderer.renderDrawData(drawData);
         }
 
         if (frameX != oldFrameX || frameY != oldFrameY || frameWidth != oldFrameWidth || frameHeight != oldFrameHeight) {
-            Minecraft.getInstance().resizeDisplay();
+            ((WindowExt)(Object)Minecraft.getInstance().getWindow()).flashback$updateScaledFramebuffer(true);
         }
 
         transitionActiveState(true);
+    }
+
+    public static boolean isMainFrameHovered() {
+        return isFrameHovered;
     }
 
     public static boolean isMainFrameActive() {
@@ -939,23 +934,21 @@ public class ReplayUI {
     }
 
     private static void handleBasicInputs() {
-        if (ImGui.isMouseClicked(GLFW.GLFW_MOUSE_BUTTON_RIGHT)) {
+        if (ImGui.isMouseClicked(ImGuiMouseButton.Right)) {
             HitResult result = getLookTarget();
             if (result instanceof EntityHitResult entityHitResult) {
                 if (Minecraft.getInstance().player == Minecraft.getInstance().getCameraEntity()) {
                     Minecraft.getInstance().player.setDeltaMovement(Vec3.ZERO);
                 }
-                selectedEntity = entityHitResult.getEntity().getUUID();
+                setSelectedEntity(entityHitResult.getEntity().getUUID());
                 openSelectedEntityPopup = true;
             }
             return;
         }
 
-        if (ImGui.isMouseClicked(GLFW.GLFW_MOUSE_BUTTON_LEFT)) {
-            int key = -GLFW.GLFW_MOUSE_BUTTON_LEFT-1;
-            if (key != 0) {
-                imguiGlfw.setGrabbed(true, key, true, frameX + frameWidth / 2f, frameY + frameHeight / 2f);
-            }
+        if (ImGui.isMouseClicked(ImGuiMouseButton.Left)) {
+            int key = -ImGuiMouseButton.Left-1;
+            imguiWindower.setGrabbed(true, key, frameX + frameWidth / 2f, frameY + frameHeight / 2f);
         }
     }
 
@@ -1018,10 +1011,16 @@ public class ReplayUI {
         }
     }
 
-    public static boolean consumeNavClose() {
-        boolean navClose = ReplayUI.navClose;
-        ReplayUI.navClose = false;
-        return navClose;
+    public static boolean consumeConfirm() {
+        boolean confirmPressed = ReplayUI.confirmPressed;
+        ReplayUI.confirmPressed = false;
+        return confirmPressed;
+    }
+
+    public static boolean consumeCancel() {
+        boolean cancelPressed = ReplayUI.cancelPressed;
+        ReplayUI.cancelPressed = false;
+        return cancelPressed;
     }
 
     public static boolean isMoveQuickDown() {

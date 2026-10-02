@@ -1,14 +1,15 @@
 package com.moulberry.flashback.keyframe.types;
 
 import com.moulberry.flashback.editor.ui.ImGuiHelper;
+import com.moulberry.flashback.editor.ui.ReplayUI;
 import com.moulberry.flashback.keyframe.KeyframeType;
 import com.moulberry.flashback.keyframe.change.KeyframeChange;
 import com.moulberry.flashback.keyframe.change.KeyframeChangeCameraPosition;
 import com.moulberry.flashback.keyframe.change.KeyframeChangeFreeze;
 import com.moulberry.flashback.keyframe.handler.KeyframeHandler;
 import com.moulberry.flashback.keyframe.impl.FreezeKeyframe;
-import imgui.flashback.ImGui;
-import imgui.flashback.type.ImBoolean;
+import imgui.moulberry90.ImGui;
+import imgui.moulberry90.type.ImBoolean;
 import net.minecraft.client.resources.language.I18n;
 import org.jetbrains.annotations.Nullable;
 
@@ -56,11 +57,11 @@ public class FreezeKeyframeType implements KeyframeType<FreezeKeyframe> {
 
             delay[0] = Math.max(0, Math.min(10, delay[0]));
 
-            if (ImGui.button(I18n.get("flashback.add"))) {
+            if (ImGui.button(I18n.get("flashback.add")) || ReplayUI.consumeConfirm()) {
                 return new FreezeKeyframe(frozen.get(), delay[0]);
             }
             ImGui.sameLine();
-            if (ImGui.button(I18n.get("gui.cancel"))) {
+            if (ImGui.button(I18n.get("gui.cancel")) || ReplayUI.consumeCancel()) {
                 ImGui.closeCurrentPopup();
             }
             return null;

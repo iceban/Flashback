@@ -1,6 +1,7 @@
 package com.moulberry.flashback.keyframe.types;
 
 import com.moulberry.flashback.editor.ui.ImGuiHelper;
+import com.moulberry.flashback.editor.ui.ReplayUI;
 import com.moulberry.flashback.keyframe.Keyframe;
 import com.moulberry.flashback.keyframe.KeyframeType;
 import com.moulberry.flashback.keyframe.change.KeyframeChange;
@@ -9,8 +10,8 @@ import com.moulberry.flashback.keyframe.change.KeyframeChangeCameraPositionOrbit
 import com.moulberry.flashback.keyframe.handler.KeyframeHandler;
 import com.moulberry.flashback.keyframe.impl.CameraKeyframe;
 import com.moulberry.flashback.keyframe.impl.CameraOrbitKeyframe;
-import imgui.flashback.ImGui;
-import imgui.flashback.type.ImFloat;
+import imgui.moulberry90.ImGui;
+import imgui.moulberry90.type.ImFloat;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.resources.language.I18n;
@@ -73,12 +74,12 @@ public class CameraOrbitKeyframeType implements KeyframeType<CameraOrbitKeyframe
             ImGuiHelper.inputFloat(I18n.get("flashback.yaw"), cameraOrbitYaw);
             ImGuiHelper.inputFloat(I18n.get("flashback.pitch"), cameraOrbitPitch);
 
-            if (ImGui.button(I18n.get("flashback.add"))) {
+            if (ImGui.button(I18n.get("flashback.add")) || ReplayUI.consumeConfirm()) {
                 Vector3d center = new Vector3d(cameraOrbitCenter[0], cameraOrbitCenter[1], cameraOrbitCenter[2]);
                 return new CameraOrbitKeyframe(center, cameraOrbitDistance[0], cameraOrbitYaw[0], cameraOrbitPitch[0]);
             }
             ImGui.sameLine();
-            if (ImGui.button(I18n.get("gui.cancel"))) {
+            if (ImGui.button(I18n.get("gui.cancel")) || ReplayUI.consumeCancel()) {
                 ImGui.closeCurrentPopup();
             }
             return null;

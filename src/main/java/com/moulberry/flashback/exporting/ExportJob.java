@@ -1,43 +1,67 @@
 package com.moulberry.flashback.exporting;
 
+import com.mojang.blaze3d.Blaze3D;
 import com.mojang.blaze3d.ProjectionType;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.platform.Window;
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.ByteBufferBuilder;
+import com.mojang.blaze3d.vertex.MeshData;
+import com.mojang.renderpearl.api.buffers.GpuBuffer;
+import com.mojang.renderpearl.api.commands.RenderPass;
+import com.mojang.renderpearl.api.device.GpuSurface;
+import com.mojang.renderpearl.api.device.SurfaceException;
 import com.moulberry.flashback.*;
+import com.moulberry.flashback.combo_options.ExportProjection;
 import com.moulberry.flashback.combo_options.VideoContainer;
 import com.moulberry.flashback.editor.ui.ReplayUI;
 import com.moulberry.flashback.editor.ui.windows.ExportDoneWindow;
 import com.moulberry.flashback.exporting.taskbar.TaskbarManager;
+import com.moulberry.flashback.ext.WindowExt;
+import com.moulberry.flashback.keyframe.change.KeyframeChangeTickrate;
 import com.moulberry.flashback.keyframe.handler.KeyframeHandler;
 import com.moulberry.flashback.keyframe.handler.MinecraftKeyframeHandler;
 import com.moulberry.flashback.keyframe.handler.TickrateKeyframeCapture;
 import com.moulberry.flashback.sound.FlashbackAudioManager;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.playback.ReplayServer;
+import com.moulberry.flashback.utils.FramebufferUtils;
+import com.moulberry.flashback.utils.InputHelper;
+import com.moulberry.flashback.utils.WindowSizeTracker;
 import com.moulberry.flashback.visuals.AccurateEntityPositionHandler;
+import com.moulberry.flashback.visuals.FlashbackDrawBuffer;
+import imgui.moulberry90.flag.ImGuiKey;
+import imgui.moulberry90.flag.ImGuiMouseButton;
 import net.minecraft.ChatFormatting;
-import net.minecraft.Util;
+import net.minecraft.client.gui.font.TextRenderable;
+import net.minecraft.client.renderer.Projection;
+import net.minecraft.client.renderer.ProjectionMatrixBuffer;
+import net.minecraft.client.renderer.rendertype.PreparedRenderType;
+import net.minecraft.client.renderer.rendertype.RenderType;
+import net.minecraft.util.LightCoordsUtil;
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
-import net.minecraft.client.renderer.CachedOrthoProjectionMatrixBuffer;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.phys.Vec3;
-import org.bytedeco.ffmpeg.global.avutil;
 import org.joml.Matrix4f;
-import org.lwjgl.glfw.GLFW;
+import org.joml.Vector4f;
 import org.lwjgl.openal.SOFTLoopback;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.MathContext;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -49,6 +73,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
 
 public class ExportJob {
+
+    private static final Vector4f EMPTY_CLEAR_COLOUR = new Vector4f(0);
 
     private final ExportSettings settings;
 
@@ -68,7 +94,6 @@ public class ExportJob {
     private long clientTickTimeNanos = 0;
     private long renderTimeNanos = 0;
     private long encodeTimeNanos = 0;
-    private long downloadTimeNanos = 0;
     private boolean patreonLinkClicked = false;
 
     private int extraDummyFrames = 0;
@@ -85,7 +110,7 @@ public class ExportJob {
     private NativeImage firstFrame = null;
     private int writtenFrames = 0;
 
-    public static final int SRC_PIXEL_FORMAT = avutil.AV_PIX_FMT_RGBA;
+    public Runnable saveDepthAfterLevel = null;
 
     public ExportJob(ExportSettings settings) {
         this.settings = settings;
@@ -105,11 +130,33 @@ public class ExportJob {
     }
 
     public int getWidth() {
-        return this.settings.resolutionX() * (this.settings.ssaa() ? 2 : 1);
+        int resolutionX = this.settings.resolutionX();
+
+        ExportProjection projection = this.settings.projection();
+        if (projection == ExportProjection.CUBE_MAP) {
+            resolutionX = (resolutionX + 3)/4;
+        }
+
+        if (this.settings.ssaa()) {
+            resolutionX *= 2;
+        }
+
+        return resolutionX;
     }
 
     public int getHeight() {
-        return this.settings.resolutionY() * (this.settings.ssaa() ? 2 : 1);
+        int resolutionY = this.settings.resolutionY();
+
+        ExportProjection projection = this.settings.projection();
+        if (projection == ExportProjection.CUBE_MAP) {
+            resolutionY = (resolutionY + 2)/3;
+        }
+
+        if (this.settings.ssaa()) {
+            resolutionY *= 2;
+        }
+
+        return resolutionY;
     }
 
     public double getCurrentTickDouble() {
@@ -133,6 +180,8 @@ public class ExportJob {
         return this.settings;
     }
 
+    private record TempFileInfo(String name, Path file, Path folder) {}
+
     public void run() {
         ReplayServer replayServer = Flashback.getReplayServer();
         if (this.running || replayServer == null) {
@@ -147,36 +196,64 @@ public class ExportJob {
 
         UUID uuid = UUID.randomUUID();
 
-        String tempFileName = "replay_export_temp/" + uuid + "." + this.settings.container().extension();
-        Path exportTempFile = Path.of(tempFileName);
-        Path exportTempFolder = exportTempFile.getParent();
+        TempFileInfo tempFileInfo = null;
+        if (!this.settings.container().isImageSequence() || this.settings.pngSequenceFormat() == null) {
+            String tempFileName = "replay_export_temp/" + uuid + "." + this.settings.container().extension();
+            Path exportTempFile = Path.of(tempFileName);
+            Path exportTempFolder = exportTempFile.getParent();
+            tempFileInfo = new TempFileInfo(tempFileName, exportTempFile, exportTempFolder);
+        }
+        boolean keepTempFile = false;
 
         int oldGuiScale = Minecraft.getInstance().options.guiScale().get();
 
         this.extraDummyFrames = Flashback.getConfig().exporting.exportRenderDummyFrames;
 
         try {
-            Files.createDirectories(exportTempFolder);
+            if (tempFileInfo != null) {
+                Files.createDirectories(tempFileInfo.folder);
+            }
 
-            try (VideoWriter encoder = createVideoWriter(this.settings, tempFileName);
-                 SaveableFramebufferQueue downloader = new SaveableFramebufferQueue(this.settings.resolutionX(), this.settings.resolutionY())) {
+            int resolutionX = this.settings.resolutionX();
+            int resolutionY = this.settings.resolutionY();
+
+            if (this.settings.projection() == ExportProjection.CUBE_MAP || this.settings.projection() == ExportProjection.EQUIRECTANGULAR) {
+                if (this.settings.projection() == ExportProjection.CUBE_MAP) {
+                    resolutionX = (resolutionX + 3)/4;
+                    resolutionY = (resolutionY + 2)/3;
+                }
+
+                var camera = Minecraft.getInstance().gameRenderer.mainCamera();
+                camera.enablePanoramicMode();
+            }
+
+            try (VideoWriter encoder = createVideoWriter(this.settings, tempFileInfo);
+                 SaveableFramebufferQueue downloader = new SaveableFramebufferQueue(resolutionX, resolutionY)) {
                 doExport(encoder, downloader);
             }
 
-            if (this.settings.container() != VideoContainer.PNG_SEQUENCE) {
-                Files.move(exportTempFile, this.settings.output(), StandardCopyOption.REPLACE_EXISTING);
+            Path outputLocation = this.settings.output();
+            boolean errorMovingToOutput = false;
+            if (tempFileInfo != null) {
+                try {
+                    Files.move(tempFileInfo.file, this.settings.output(), StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException e) {
+                    Flashback.LOGGER.error("Error while moving temp file to export output", e);
+                    outputLocation = tempFileInfo.file;
+                    errorMovingToOutput = true;
+                    keepTempFile = true;
+                }
             }
 
             try {
                 long size = 0;
                 double duration = this.writtenFrames / this.settings.framerate();
 
-                Path output = this.settings.output();
-                if (this.settings.container() != VideoContainer.PNG_SEQUENCE && Files.exists(output) && Files.isRegularFile(output)) {
-                    size = Files.size(output);
+                if (this.settings.container() != VideoContainer.PNG_SEQUENCE && Files.exists(outputLocation) && Files.isRegularFile(outputLocation)) {
+                    size = Files.size(outputLocation);
                 }
 
-                ExportDoneWindow.addFinishedExportEntry(new ExportDoneWindow.FinishedExportEntry(this.settings, this.firstFrame, duration, size));
+                ExportDoneWindow.addFinishedExportEntry(new ExportDoneWindow.FinishedExportEntry(this.settings, outputLocation, errorMovingToOutput, this.firstFrame, duration, size));
                 this.firstFrame = null;
             } catch (IOException ignored) {}
         } catch (IOException e) {
@@ -185,9 +262,13 @@ public class ExportJob {
             this.running = false;
             this.shouldChangeFramebufferSize = false;
 
+            if (this.settings.projection() == ExportProjection.CUBE_MAP || this.settings.projection() == ExportProjection.EQUIRECTANGULAR) {
+                Minecraft.getInstance().gameRenderer.mainCamera().disablePanoramicMode();
+            }
+
             // Reset display size
             Minecraft.getInstance().options.guiScale().set(oldGuiScale);
-            Minecraft.getInstance().resizeDisplay();
+            ((WindowExt)(Object)Minecraft.getInstance().getWindow()).flashback$updateScaledFramebuffer(true);
 
             // Refreeze server & client
             replayServer.replayPaused = true;
@@ -205,28 +286,49 @@ public class ExportJob {
                 this.firstFrame = null;
             }
 
-            try {
-                Files.deleteIfExists(exportTempFile);
-            } catch (IOException ignored) {}
+            if (tempFileInfo != null) {
+                if (!keepTempFile) {
+                    try {
+                        Files.deleteIfExists(tempFileInfo.file);
+                    } catch (IOException ignored) {}
+                }
 
-            try {
-                boolean empty;
-                try (var stream = Files.newDirectoryStream(exportTempFolder)) {
-                    empty = !stream.iterator().hasNext();
-                }
-                if (empty) {
-                    Files.deleteIfExists(exportTempFolder);
-                }
-            } catch (IOException ignored) {}
+                try {
+                    Files.deleteIfExists(tempFileInfo.folder);
+                } catch (IOException ignored) {}
+            }
         }
     }
 
-    private static VideoWriter createVideoWriter(ExportSettings settings, String tempFileName) {
-        if (settings.container() == VideoContainer.PNG_SEQUENCE) {
-            return new PNGSequenceVideoWriter(settings);
+    private static VideoWriter createVideoWriter(ExportSettings settings, TempFileInfo tempFileInfo) {
+        String filename;
+        if (tempFileInfo != null) {
+            filename = tempFileInfo.name;
+        } else if (settings.pngSequenceFormat() != null) {
+            String prefix;
+            Path folder;
+
+            if (Files.isDirectory(settings.output())) {
+                prefix = "";
+                folder = settings.output();
+            } else {
+                prefix = settings.output().getFileName().toString() + "-";
+                folder = settings.output().getParent();
+            }
+
+            String formatter = prefix + settings.pngSequenceFormat();
+
+            // Add extension if missing
+            String extension = "." + settings.container().extension();
+            if (!formatter.endsWith(extension)) {
+                formatter = formatter + extension;
+            }
+
+            filename = folder.resolve(formatter).toString();
         } else {
-            return new AsyncFFmpegVideoWriter(settings, tempFileName);
+            throw new IllegalStateException("settings.pngSequenceFormat() must not be null");
         }
+        return new AsyncFFmpegVideoWriter(settings, filename);
     }
 
     private void doExport(VideoWriter videoWriter, SaveableFramebufferQueue downloader) {
@@ -234,6 +336,8 @@ public class ExportJob {
         if (replayServer == null) {
             return;
         }
+
+        Minecraft mc = Minecraft.getInstance();
 
         Random random = new Random(1000);
         Random mathRandom = this.settings.resetRng() ? Utils.getInternalMathRandom() : null;
@@ -244,9 +348,9 @@ public class ExportJob {
         shouldChangeFramebufferSize = true;
         // Double gui scale if using SSAA which doubles resolution
         if (this.settings.ssaa()) {
-            Minecraft.getInstance().options.guiScale().set(Minecraft.getInstance().options.guiScale().get() * 2);
+            mc.options.guiScale().set(mc.options.guiScale().get() * 2);
         }
-        Minecraft.getInstance().resizeDisplay();
+        ((WindowExt)(Object)Minecraft.getInstance().getWindow()).flashback$updateScaledFramebuffer(true);
 
         List<TickInfo> ticks = calculateTicks(this.settings.editorState(), this.settings.startTick(), this.settings.endTick(), this.settings.framerate());
 
@@ -283,7 +387,7 @@ public class ExportJob {
 
             this.updateClientFreeze(frozen);
 
-            DeltaTracker.Timer timer = Minecraft.getInstance().deltaTracker;
+            DeltaTracker.Timer timer = mc.deltaTracker;
             timer.updateFrozenState(frozen);
             timer.updatePauseState(false);
             timer.deltaTicks = deltaTicksFloat;
@@ -291,7 +395,7 @@ public class ExportJob {
             timer.deltaTickResidual = (float) partialClientTick;
             timer.pausedDeltaTickResidual = (float) partialClientTick;
 
-            AccurateEntityPositionHandler.apply(Minecraft.getInstance().level, timer);
+            AccurateEntityPositionHandler.apply(mc.level, timer);
 
             // Apply keyframes
             if (frozen) {
@@ -300,7 +404,7 @@ public class ExportJob {
                 FlashbackAudioManager.startHandling();
             }
             try {
-                KeyframeHandler keyframeHandler = new MinecraftKeyframeHandler(Minecraft.getInstance());
+                KeyframeHandler keyframeHandler = new MinecraftKeyframeHandler(mc);
                 this.settings.editorState().applyKeyframes(keyframeHandler, (float)(this.settings.startTick() + currentTickDouble));
             } finally {
                 if (!frozen) {
@@ -310,27 +414,30 @@ public class ExportJob {
 
             long pauseScreenStart = System.currentTimeMillis();
             int additionalDummyFrames = this.extraDummyFrames;
-            while (Minecraft.getInstance().getOverlay() != null || Minecraft.getInstance().screen != null || additionalDummyFrames > 0) {
-                if (Minecraft.getInstance().getOverlay() != null || Minecraft.getInstance().screen != null) {
+            if (tickIndex == 0) {
+                additionalDummyFrames = Math.max(this.extraDummyFrames, 60);
+            }
+            while (mc.gui.overlay() != null || mc.gui.screen() != null || additionalDummyFrames > 0) {
+                boolean overlayOrScreen = mc.gui.overlay() != null || mc.gui.screen() != null;
+                if (overlayOrScreen) {
                     this.runClientTick(frozen);
                 }
                 if (additionalDummyFrames > 0) {
                     additionalDummyFrames -= 1;
                 }
 
-                Window window = Minecraft.getInstance().getWindow();
-                RenderTarget renderTarget = Minecraft.getInstance().mainRenderTarget;
-                RenderSystem.getDevice().createCommandEncoder().clearColorAndDepthTextures(renderTarget.getColorTexture(), 0, renderTarget.getDepthTexture(), 1.0);
-                Minecraft.getInstance().gameRenderer.render(Minecraft.getInstance().deltaTracker, true);
+                RenderTarget renderTarget = mc.gameRenderer.mainRenderTarget();
+                render(renderTarget, mc.deltaTracker);
 
-                this.shouldChangeFramebufferSize = false;
-                if (!Minecraft.getInstance().getWindow().isMinimized()) {
-                    renderTarget.blitToScreen();
+                if (overlayOrScreen) {
+                    finishFrame(renderTarget, new ArrayList<>(List.of("Waiting for overlay to disappear")), true, false);
+                } else if (tickIndex == 0) {
+                    finishFrame(renderTarget, new ArrayList<>(List.of("Warming up... " + Math.max(0, 60 - additionalDummyFrames) + "/60")), true, false);
+                } else {
+                    finishHiddenFrame();
                 }
-                window.updateDisplay(null);
-                this.shouldChangeFramebufferSize = true;
 
-                if (Minecraft.getInstance().getOverlay() != null || Minecraft.getInstance().screen != null) {
+                if (overlayOrScreen) {
                     LockSupport.parkNanos("waiting for pause overlay to disappear", 50_000_000L);
 
                     // Force remove screens/overlays after 5s/15s respectively
@@ -339,10 +446,10 @@ public class ExportJob {
                         pauseScreenStart = currentTime;
                     }
                     if (currentTime - pauseScreenStart > 5000) {
-                        Minecraft.getInstance().setScreen(null);
+                        mc.gui.setScreen(null);
                     }
                     if (currentTime - pauseScreenStart > 15000) {
-                        Minecraft.getInstance().setOverlay(null);
+                        mc.gui.setOverlay(null);
                     }
                 }
 
@@ -356,40 +463,104 @@ public class ExportJob {
                 timer.pausedDeltaTickResidual = (float) partialClientTick;
             }
 
-            SaveableFramebuffer saveable = downloader.take();
-            RenderTarget renderTarget = Minecraft.getInstance().mainRenderTarget;
+            RenderTarget renderTarget = Minecraft.getInstance().gameRenderer.mainRenderTarget();
 
-            // Perform rendering
-            PerfectFrames.waitUntilFrameReady();
-            RenderSystem.getDevice().createCommandEncoder().clearColorAndDepthTextures(renderTarget.getColorTexture(), 0, renderTarget.getDepthTexture(), 1.0);
+            ExportProjection projection = this.settings.projection();
 
-            start = System.nanoTime();
-            Minecraft.getInstance().gameRenderer.render(timer, true);
-            renderTimeNanos += System.nanoTime() - start;
+            if (projection == ExportProjection.CUBE_MAP || projection == ExportProjection.EQUIRECTANGULAR) {
+                var player = mc.player;
 
-            boolean cancel;
+                for (int i = 0; i < 6; i++) {
+                    if (i < 4) {
+                        player.setYRot(90.0f * i - 90.0f);
+                        player.setXRot(0.0f);
+                    } else if (i == 4) {
+                        player.setYRot(0.0f);
+                        player.setXRot(-90.0f);
+                    } else if (i == 5) {
+                        player.setYRot(0.0f);
+                        player.setXRot(90.0f);
+                    }
+                    player.setOldRot();
 
-            // Capture audio if necessary
-            FloatBuffer audioBuffer = null;
-            if (this.settings.recordAudio()) {
-                long device = Minecraft.getInstance().getSoundManager().soundEngine.library.currentDevice;
+                    SaveableFramebuffer saveable = downloader.take();
+                    if (this.settings.depthMap()) {
+                        this.saveDepthAfterLevel = () -> {
+                            downloader.startDepthDownload(renderTarget, saveable);
+                        };
+                    }
 
-                audioSamples += 48000 / this.settings.framerate();
-                int renderSamples = (int) audioSamples;
-                audioSamples -= renderSamples;
+                    // Perform rendering
+                    PerfectFrames.waitUntilFrameReady();
+                    start = System.nanoTime();
+                    render(renderTarget, timer);
+                    finishHiddenFrame();
+                    renderTimeNanos += System.nanoTime() - start;
 
-                int channels = this.settings.stereoAudio() ? 2 : 1;
+                    // Capture audio if necessary
+                    FloatBuffer audioBuffer = null;
+                    if (this.settings.recordAudio() && i == 0) {
+                        long device = Minecraft.getInstance().getSoundManager().soundEngine.library.currentDevice;
 
-                audioBuffer = ByteBuffer.allocateDirect(renderSamples * 4 * channels).order(ByteOrder.nativeOrder()).asFloatBuffer();
-                SOFTLoopback.alcRenderSamplesSOFT(device, audioBuffer, renderSamples);
+                        audioSamples += 48000 / this.settings.framerate();
+                        int renderSamples = (int) audioSamples;
+                        audioSamples -= renderSamples;
+
+                        int channels = this.settings.stereoAudio() ? 2 : 1;
+
+                        audioBuffer = ByteBuffer.allocateDirect(renderSamples * 4 * channels).order(ByteOrder.nativeOrder()).asFloatBuffer();
+                        SOFTLoopback.alcRenderSamplesSOFT(device, audioBuffer, renderSamples);
+                    }
+                    saveable.audioBuffer = audioBuffer;
+
+                    if (this.settings.depthMap()) {
+                        this.tryDepthDownload();
+                    } else {
+                        downloader.startDownload(renderTarget, saveable, this.settings.ssaa());
+                    }
+                }
+            } else {
+                SaveableFramebuffer saveable = downloader.take();
+                if (this.settings.depthMap()) {
+                    this.saveDepthAfterLevel = () -> {
+                        downloader.startDepthDownload(renderTarget, saveable);
+                    };
+                }
+
+                // Perform rendering
+                PerfectFrames.waitUntilFrameReady();
+                start = System.nanoTime();
+                render(renderTarget, timer);
+                finishHiddenFrame();
+                renderTimeNanos += System.nanoTime() - start;
+
+                // Capture audio if necessary
+                FloatBuffer audioBuffer = null;
+                if (this.settings.recordAudio()) {
+                    long device = Minecraft.getInstance().getSoundManager().soundEngine.library.currentDevice;
+
+                    audioSamples += 48000 / this.settings.framerate();
+                    int renderSamples = (int) audioSamples;
+                    audioSamples -= renderSamples;
+
+                    int channels = this.settings.stereoAudio() ? 2 : 1;
+
+                    audioBuffer = ByteBuffer.allocateDirect(renderSamples * 4 * channels).order(ByteOrder.nativeOrder()).asFloatBuffer();
+                    SOFTLoopback.alcRenderSamplesSOFT(device, audioBuffer, renderSamples);
+                }
+                saveable.audioBuffer = audioBuffer;
+
+                if (this.settings.depthMap()) {
+                    this.tryDepthDownload();
+                } else {
+                    downloader.startDownload(renderTarget, saveable, this.settings.ssaa());
+                }
             }
 
-            saveable.audioBuffer = audioBuffer;
-            downloader.startDownload(renderTarget, saveable, this.settings.ssaa());
             submitDownloadedFrames(videoWriter, downloader, false);
 
             this.shouldChangeFramebufferSize = false;
-            cancel = finishFrame(renderTarget, tickIndex, ticks.size());
+            boolean cancel = finishFrameNormal(renderTarget, tickIndex, ticks.size());
             this.shouldChangeFramebufferSize = true;
 
             if (cancel) {
@@ -399,7 +570,34 @@ public class ExportJob {
         }
 
         submitDownloadedFrames(videoWriter, downloader, true);
-        videoWriter.finish();
+
+        long finishStart = System.currentTimeMillis();
+        videoWriter.finish(info -> {
+            long time = System.currentTimeMillis() - finishStart;
+            String progress = "Finalizing video (" + info + ")... " + time/1000 + "s";
+            finishFrameFinal(Minecraft.getInstance().gameRenderer.mainRenderTarget(), progress, false);
+        });
+    }
+
+    public void tryDepthDownload() {
+        if (this.saveDepthAfterLevel != null) {
+            this.saveDepthAfterLevel.run();
+            this.saveDepthAfterLevel = null;
+        }
+    }
+
+    private static void render(RenderTarget renderTarget, DeltaTracker.Timer timer) {
+        Minecraft minecraft = Minecraft.getInstance();
+
+        if (minecraft.level != null) {
+            minecraft.level.update();
+        }
+        minecraft.gameRenderer.update(timer);
+        minecraft.gameRenderer.extract(timer, true);
+        RenderSystem.executePendingTasks();
+
+        FramebufferUtils.clear(renderTarget, EMPTY_CLEAR_COLOUR);
+        minecraft.gameRenderer.render();
     }
 
     private void updateRandoms(Random random, Random mathRandom) {
@@ -453,11 +651,13 @@ public class ExportJob {
             minecraft.particleEngine.clearParticles();
 
             // Reset all walk animations & tick counts
-            for (Entity entity : minecraft.level.entitiesForRendering()) {
-                if (entity instanceof LivingEntity livingEntity) {
-                    livingEntity.walkAnimation.stop();
+            if (minecraft.level != null) {
+                for (Entity entity : minecraft.level.entitiesForRendering()) {
+                    if (entity instanceof LivingEntity livingEntity) {
+                        livingEntity.walkAnimation.stop();
+                    }
+                    entity.tickCount = 0;
                 }
-                entity.tickCount = 0;
             }
 
             // Advance until tick is at start
@@ -484,7 +684,7 @@ public class ExportJob {
         }
 
         // Remove screen
-        minecraft.setScreen(null);
+        minecraft.gui.setScreen(null);
     }
 
     private void setServerTickAndWait(ReplayServer replayServer, int targetTick, boolean force) {
@@ -507,8 +707,11 @@ public class ExportJob {
         Minecraft minecraft = Minecraft.getInstance();
 
         minecraft.packetProcessor().processQueuedPackets();
-        while (minecraft.pollTask()) {}
+        minecraft.runAllTasks();
         this.updateClientFreeze(frozen);
+        if (!frozen) {
+            minecraft.getTextureManager().tick();
+        }
         minecraft.tick();
         this.updateSoundSource(minecraft);
 
@@ -525,7 +728,7 @@ public class ExportJob {
             }
         }
 
-        minecraft.getSoundManager().updateSource(Minecraft.getInstance().gameRenderer.getMainCamera());
+        minecraft.getSoundManager().updateSource(Minecraft.getInstance().gameRenderer.mainCamera());
     }
 
     private void updateClientFreeze(boolean frozen) {
@@ -536,103 +739,293 @@ public class ExportJob {
     }
 
     private void submitDownloadedFrames(VideoWriter videoWriter, SaveableFramebufferQueue downloader, boolean drain) {
-        SaveableFramebufferQueue.DownloadedFrame frame;
+        long start = System.currentTimeMillis();
+        boolean firstDrainFrame = true;
         while (true) {
-            long start = System.nanoTime();
-            frame = downloader.finishDownload(drain);
-            downloadTimeNanos += System.nanoTime() - start;
-
-            if (frame == null) {
-                break;
+            if (drain) {
+                long time = System.currentTimeMillis() - start;
+                String progress = "Capturing " + downloader.pendingCount() + " output frames... " + time/1000 + "s";
+                finishFrameFinal(Minecraft.getInstance().gameRenderer.mainRenderTarget(), progress, firstDrainFrame);
+                firstDrainFrame = false;
+            } else {
+                RenderSystem.executePendingTasks();
             }
 
-            if (this.firstFrame == null) {
-                this.firstFrame = frame.image().mappedCopy(x -> 0xFF000000 | x);
-            }
-            this.writtenFrames += 1;
+            if (this.settings.projection() == ExportProjection.CUBE_MAP || this.settings.projection() == ExportProjection.EQUIRECTANGULAR) {
+                var frames = downloader.finishDownloadMultiple(6);
 
-            start = System.nanoTime();
-            videoWriter.encode(frame.image(), frame.audioBuffer());
-            encodeTimeNanos += System.nanoTime() - start;
+                if (frames == null) {
+                    if (drain && !downloader.isEmpty()) {
+                        LockSupport.parkNanos("waiting for frame to download", 100000L);
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+
+                if (!this.settings.transparent()) {
+                    for (ImageFrame frame : frames) {
+                        frame.makeOpaque();
+                    }
+                }
+
+                int resolutionX = this.settings.resolutionX();
+                int resolutionY = this.settings.resolutionY();
+
+                ImageFrame target = new ImageFrame(resolutionX, resolutionY, frames[0].format, true);
+                target.audioBuffer = frames[0].audioBuffer;
+
+                if (this.settings.projection() == ExportProjection.CUBE_MAP) {
+                    for (int i = 0; i < frames.length; i++) {
+                        int positionX;
+                        int positionY;
+
+                        if (i < 4) {
+                            positionX = resolutionX * i / 4;
+                            positionY = resolutionY / 3;
+                        } else if (i == 4) {
+                            positionX = resolutionX / 4;
+                            positionY = 0;
+                        } else if (i == 5) {
+                            positionX = resolutionX / 4;
+                            positionY = resolutionY * 2 / 3;
+                        } else {
+                            break;
+                        }
+
+                        ImageFrame image = frames[i];
+                        int sizeX = Math.min(image.width, target.width - positionX);
+                        int sizeY = Math.min(image.height, target.height - positionY);
+                        image.copyRect(target, 0, 0, positionX, positionY, sizeX, sizeY);
+                    }
+                } else {
+                    for (int y = 0; y < resolutionY; y++) {
+                        for (int x = 0; x < resolutionX; x++) {
+                            double yaw = (double) x / resolutionX * 2.0 * Math.PI;
+                            double pitch = (double) y / resolutionY * Math.PI - Math.PI/2.0;
+
+                            // Sphere xyz
+                            double sx = -Math.sin(yaw) * Math.cos(pitch);
+                            double sy = Math.sin(pitch);
+                            double sz = -Math.cos(yaw) * Math.cos(pitch);
+
+                            // Cube xyz
+                            double a = Math.max(Math.abs(sx), Math.max(Math.abs(sy), Math.abs(sz)));
+                            double cx = sx / a;
+                            double cy = sy / a;
+                            double cz = sz / a;
+
+                            if (cy == -1.0) {
+                                ImageFrame image = frames[4];
+                                int imageX = (int) Math.round((cx+1)/2 * (image.width-1));
+                                int imageY = (int) Math.round((cz+1)/2 * (image.height-1));
+
+                                image.copyPixel(target, imageX, imageY, x, y);
+                            } else if (cy == 1.0) {
+                                ImageFrame image = frames[5];
+                                int imageX = (int) Math.round((cx+1)/2 * (image.width-1));
+                                int imageY = image.height-1 - (int) Math.round((cz+1)/2 * (image.height-1));
+
+                                image.copyPixel(target, imageX, imageY, x, y);
+                            } else if (cz == -1.0) {
+                                ImageFrame image = frames[3];
+                                int imageX = image.width-1 - (int) Math.round((cx+1)/2 * (image.width-1));
+                                int imageY = (int) Math.round((cy+1)/2 * (image.height-1));
+
+                                image.copyPixel(target, imageX, imageY, x, y);
+                            } else if (cz == 1.0) {
+                                ImageFrame image = frames[1];
+                                int imageX = (int) Math.round((cx+1)/2 * (image.width-1));
+                                int imageY = (int) Math.round((cy+1)/2 * (image.height-1));
+
+                                image.copyPixel(target, imageX, imageY, x, y);
+                            } else if (cx == 1.0) {
+                                ImageFrame image = frames[2];
+                                int imageX = image.width-1 - (int) Math.round((cz+1)/2 * (image.width-1));
+                                int imageY = (int) Math.round((cy+1)/2 * (image.height-1));
+
+                                image.copyPixel(target, imageX, imageY, x, y);
+                            } else if (cx == -1.0) {
+                                ImageFrame image = frames[0];
+                                int imageX = (int) Math.round((cz+1)/2 * (image.width-1));
+                                int imageY = (int) Math.round((cy+1)/2 * (image.height-1));
+
+                                image.copyPixel(target, imageX, imageY, x, y);
+                            }
+                        }
+                    }
+                }
+
+                for (ImageFrame frame : frames) {
+                    frame.close();
+                }
+
+                if (this.firstFrame == null) {
+                    this.firstFrame = target.toOpaqueRgbaU8NativeImage();
+                }
+                this.writtenFrames += 1;
+
+                long encodeStart = System.nanoTime();
+                videoWriter.encode(target);
+                encodeTimeNanos += System.nanoTime() - encodeStart;
+            } else {
+                ImageFrame frame = downloader.finishDownload();
+
+                if (frame == null) {
+                    if (drain && !downloader.isEmpty()) {
+                        LockSupport.parkNanos("waiting for frame to download", 100000L);
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+
+                if (!this.settings.transparent()) {
+                    frame.makeOpaque();
+                }
+
+                if (this.firstFrame == null) {
+                    this.firstFrame = frame.toOpaqueRgbaU8NativeImage();
+                }
+                this.writtenFrames += 1;
+
+                long encodeStart = System.nanoTime();
+                videoWriter.encode(frame);
+                encodeTimeNanos += System.nanoTime() - encodeStart;
+            }
         }
     }
 
-    private static CachedOrthoProjectionMatrixBuffer projectionBuffers = null;
+    private static ProjectionMatrixBuffer projectionBuffers = null;
+    private static Projection projection;
 
-    private boolean finishFrame(RenderTarget framebuffer, int currentFrame, int totalFrames) {
-        boolean cancel = false;
+    private static RenderTarget displayTarget = null;
+
+    private boolean finishFrameNormal(RenderTarget framebuffer, int currentFrame, int totalFrames) {
+        this.progressCount = currentFrame;
+        this.progressOutOf = totalFrames;
+
+        if (currentFrame == totalFrames) {
+            this.finishFrameFinal(framebuffer, "Saving...", true);
+            return false;
+        }
+
+        List<String> lines = new ArrayList<>();
+
+        lines.add("Exported Frames: " + currentFrame + "/" + totalFrames);
 
         long currentTime = System.currentTimeMillis();
-        if (currentTime - this.lastRenderMillis > 1000/60 || currentFrame == totalFrames) {
-            this.progressCount = currentFrame;
-            this.progressOutOf = totalFrames;
+        long elapsed = currentTime - this.renderStartTime;
+        lines.add("Time elapsed: " + formatTime(elapsed));
 
-            Window window = Minecraft.getInstance().getWindow();
+        if (currentFrame >= this.settings.framerate()) {
+            long estimatedRemaining = (currentTime - this.renderStartTime) * (totalFrames - currentFrame) / currentFrame;
+            lines.add("Estimated time remaining: " + formatTime(estimatedRemaining));
+        } else {
+            lines.add("Estimated time remaining: ~");
+        }
 
+        return this.finishFrame(framebuffer, lines, false, true);
+    }
+
+    private void finishFrameFinal(RenderTarget framebuffer, String customProgress, boolean forceShow) {
+        List<String> lines = new ArrayList<>();
+        lines.add(customProgress);
+        this.finishFrame(framebuffer, lines, forceShow, false);
+    }
+
+    private static void finishHiddenFrame() {
+        RenderSystem.executePendingTasks();
+        RenderSystem.pollEvents(Minecraft.getInstance().sdlEventHandler);
+        RenderSystem.getDevice().createCommandEncoder().submit();
+        RenderSystem.getDynamicUniforms().reset();
+        Minecraft.getInstance().levelRenderer.endFrame();
+    }
+
+    private boolean finishFrame(RenderTarget framebuffer, List<String> lines, boolean forceShow, boolean showCancel) {
+        RenderSystem.executePendingTasks();
+        RenderSystem.pollEvents(Minecraft.getInstance().sdlEventHandler);
+
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - this.lastRenderMillis > 1000/60 || forceShow) {
             this.lastRenderMillis = currentTime;
+        } else {
+            RenderSystem.getDevice().createCommandEncoder().submit();
+            RenderSystem.getDynamicUniforms().reset();
+            Minecraft.getInstance().levelRenderer.endFrame();
+            return false;
+        }
 
-            Font font = Minecraft.getInstance().font;
-            var bufferSource = Minecraft.getInstance().renderBuffers().bufferSource();
-            bufferSource.endBatch();
-            RenderSystem.getDevice().createCommandEncoder().clearDepthTexture(framebuffer.getDepthTexture(), 1.0);
+        boolean cancel = false;
 
-            // todo: need to override the main render target with framebuffer I think?
+        Window window = Minecraft.getInstance().getWindow();
 
-            float guiScale = 4f;
-            int scaledWidth = (int) Math.ceil(framebuffer.width / guiScale);
-            int scaledHeight = (int) Math.ceil(framebuffer.height / guiScale);
+        Font font = Minecraft.getInstance().font;
 
-            if (projectionBuffers == null) {
-                projectionBuffers = new CachedOrthoProjectionMatrixBuffer("flashback export", 1000.0f, 21000.0f, true);
+        int windowFramebufferWidth = WindowSizeTracker.getWidth(window);
+        int windowFramebufferHeight = WindowSizeTracker.getHeight(window);
+
+        displayTarget = FramebufferUtils.resizeOrCreateFramebuffer(displayTarget, windowFramebufferWidth, windowFramebufferHeight, true);
+        FramebufferUtils.clear(displayTarget, FramebufferUtils.BLACK_CLEAR_COLOUR);
+
+        // Copy framebuffer to display
+        float aspectWidth = framebuffer.width / (float) windowFramebufferWidth;
+        float aspectHeight = framebuffer.height / (float) windowFramebufferHeight;
+        float framebufferX1, framebufferY1, framebufferX2, framebufferY2;
+        if (aspectWidth > aspectHeight) {
+            framebufferX1 = 0;
+            framebufferX2 = 1;
+            framebufferY1 = 0.5f - aspectHeight/aspectWidth/2;
+            framebufferY2 = 0.5f + aspectHeight/aspectWidth/2;
+        } else {
+            framebufferY1 = 0;
+            framebufferY2 = 1;
+            framebufferX1 = 0.5f - aspectWidth/aspectHeight/2;
+            framebufferX2 = 0.5f + aspectWidth/aspectHeight/2;
+        }
+        FramebufferUtils.blitTo(framebuffer.getColorTextureView(), displayTarget, framebufferX1, framebufferY1, framebufferX2, framebufferY2);
+
+        float guiScale = Math.min(windowFramebufferWidth / 420, windowFramebufferHeight / 240);
+        int scaledWidth = (int) Math.ceil(windowFramebufferWidth / guiScale);
+        int scaledHeight = (int) Math.ceil(windowFramebufferHeight / guiScale);
+
+        if (projectionBuffers == null) {
+            projectionBuffers = new ProjectionMatrixBuffer("flashback export");
+            projection = new Projection();
+            projection.setupOrtho(-1.0f, 1.0f, scaledWidth, scaledHeight, true);
+        } else if (projection.width() != scaledWidth || projection.height() != scaledHeight) {
+            projection.setSize(scaledWidth, scaledHeight);
+        }
+
+        var buffer = projectionBuffers.getBuffer(projection);
+        RenderSystem.setProjectionMatrix(buffer, ProjectionType.ORTHOGRAPHIC);
+
+        if (this.settings.name() != null) {
+            lines.add(0, this.settings.name());
+            lines.add(1, "");
+        }
+
+        lines.add("");
+
+        boolean debugPressed = InputHelper.isKeyDownRaw(ImGuiKey.F3);
+        if (pressedDebugKey != debugPressed) {
+            pressedDebugKey = debugPressed;
+            if (pressedDebugKey) {
+                showingDebug = !showingDebug;
             }
+        }
 
-            RenderSystem.setProjectionMatrix(projectionBuffers.getBuffer(scaledWidth, scaledHeight), ProjectionType.ORTHOGRAPHIC);
+        if (showingDebug) {
+            lines.add("ST: " + serverTickTimeNanos/1000000 + ", CT: " + clientTickTimeNanos/1000000);
+            lines.add("RT: " + renderTimeNanos/1000000 + ", ET: " + encodeTimeNanos/1000000);
+        } else {
+            lines.add("Press [F3] to show debug info");
+        }
 
-            Matrix4f matrix = new Matrix4f();
-            matrix.translate(0.0f, 0.0f, -1001.0f);
+        lines.add("");
 
-            List<String> lines = new ArrayList<>();
-
-            if (this.settings.name() != null) {
-                lines.add(this.settings.name());
-                lines.add("");
-            }
-
-            lines.add("Exported Frames: " + currentFrame + "/" + totalFrames);
-
-            long elapsed = currentTime - this.renderStartTime;
-            lines.add("Time elapsed: " + formatTime(elapsed));
-
-            if (currentFrame >= this.settings.framerate()) {
-                long estimatedRemaining = (currentTime - this.renderStartTime) * (totalFrames - currentFrame) / currentFrame;
-                lines.add("Estimated time remaining: " + formatTime(estimatedRemaining));
-            } else {
-                lines.add("Estimated time remaining: ~");
-            }
-
-            lines.add("");
-
-            boolean debugPressed = GLFW.glfwGetKey(Minecraft.getInstance().getWindow().handle(), GLFW.GLFW_KEY_F3) != GLFW.GLFW_RELEASE;
-            if (pressedDebugKey != debugPressed) {
-                pressedDebugKey = debugPressed;
-                if (pressedDebugKey) {
-                    showingDebug = !showingDebug;
-                }
-            }
-
-            if (showingDebug) {
-                lines.add("ST: " + serverTickTimeNanos/1000000 + ", CT: " + clientTickTimeNanos/1000000);
-                lines.add("RT: " + renderTimeNanos/1000000 + ", ET: " + encodeTimeNanos/1000000);
-                lines.add("DT: " + downloadTimeNanos/1000000);
-            } else {
-                lines.add("Press [F3] to show debug info");
-            }
-
-            lines.add("");
-
-            if (currentFrame == totalFrames) {
-                lines.add("Saving...");
-            } else if (GLFW.glfwGetKey(Minecraft.getInstance().getWindow().handle(), GLFW.GLFW_KEY_ESCAPE) != GLFW.GLFW_RELEASE) {
+        if (showCancel) {
+            if (InputHelper.isKeyDownRaw(ImGuiKey.Escape)) {
                 long current = System.currentTimeMillis();
                 if (this.escapeCancelStartMillis <= 0 || current < this.escapeCancelStartMillis) {
                     this.escapeCancelStartMillis = current;
@@ -648,54 +1041,126 @@ public class ExportJob {
                 lines.add("Hold [ESC] to cancel");
                 this.escapeCancelStartMillis = -1;
             }
+        }
 
-            int x = scaledWidth / 2;
-            int y = scaledHeight / 2 - font.lineHeight * (lines.size() + 1)/2;
-            for (String line : lines) {
-                if (line.isEmpty()) {
-                    y += font.lineHeight / 2 + 1;
-                } else {
-                    font.drawInBatch(line, x - font.width(line)/2f, y,
-                            -1, true, matrix, bufferSource, Font.DisplayMode.NORMAL, 0, 0xF000F0);
-                    y += font.lineHeight;
-                }
+        List<Font.PreparedText> preparedTexts = new ArrayList<>();
+
+        int x = scaledWidth / 2;
+        int y = scaledHeight / 2 - font.lineHeight * (lines.size() + 1)/2;
+        for (String line : lines) {
+            if (line.isEmpty()) {
+                y += font.lineHeight / 2 + 1;
+            } else {
+                var prepared = font.prepareText(line, x - font.width(line)/2f, y, -1, true, 0);
+                preparedTexts.add(prepared);
+                y += font.lineHeight;
             }
+        }
 
-            double mouseX = ReplayUI.imguiGlfw.rawMouseX / window.getScreenWidth() * scaledWidth;
-            double mouseY = ReplayUI.imguiGlfw.rawMouseY / window.getScreenHeight() * scaledHeight;
+        double mouseX = ReplayUI.imguiWindower.getRawMouseX() / window.getScreenWidth() * scaledWidth;
+        double mouseY = ReplayUI.imguiWindower.getRawMouseY() / window.getScreenHeight() * scaledHeight;
 
-            y += font.lineHeight / 2 + 1;
+        y += font.lineHeight / 2 + 1;
 
-            String patreon = "https://www.patreon.com/flashbackmod";
-            int patreonWidth = font.width(patreon);
-            if (mouseX > x - patreonWidth/2f && mouseX < x + patreonWidth/2f && mouseY > y && mouseY < y + font.lineHeight) {
-                font.drawInBatch(Component.literal(patreon).withStyle(ChatFormatting.UNDERLINE), x - patreonWidth/2f, y,
-                    -1, true, matrix, bufferSource, Font.DisplayMode.NORMAL, 0, 0xF000F0);
+        String patreon = "https://www.patreon.com/flashbackmod";
+        int patreonWidth = font.width(patreon);
+        if (mouseX > x - patreonWidth/2f && mouseX < x + patreonWidth/2f && mouseY > y && mouseY < y + font.lineHeight) {
+            var underlined = Component.literal(patreon).withStyle(ChatFormatting.UNDERLINE);
+            var prepared = font.prepareText(underlined.getVisualOrderText(), x - patreonWidth/2f, y, -1, true, false, 0);
+            preparedTexts.add(prepared);
 
-                if (GLFW.glfwGetMouseButton(window.handle(), GLFW.GLFW_MOUSE_BUTTON_LEFT) != 0) {
-                    if (!this.patreonLinkClicked) {
-                        this.patreonLinkClicked = true;
-                        Util.getPlatform().openUri(patreon);
+            if (InputHelper.isMouseDownRaw(ImGuiMouseButton.Left)) {
+                if (!this.patreonLinkClicked) {
+                    this.patreonLinkClicked = true;
+                    try {
+                        Blaze3D.openUri(new URI(patreon));
+                    } catch (URISyntaxException e) {
+                        throw new RuntimeException(e);
                     }
-                } else {
-                    this.patreonLinkClicked = false;
                 }
             } else {
-                font.drawInBatch(patreon, x - patreonWidth/2f, y,
-                    -1, true, matrix, bufferSource, Font.DisplayMode.NORMAL, 0, 0xF000F0);
                 this.patreonLinkClicked = false;
             }
-
-            bufferSource.endBatch();
-
-            if (!window.isMinimized()) {
-                int windowFramebufferWidth = WindowSizeTracker.getWidth(window);
-                int windowFramebufferHeight = WindowSizeTracker.getHeight(window);
-
-                FramebufferUtils.blitToScreenPartial(framebuffer, windowFramebufferWidth, windowFramebufferHeight, 0, 0, 1, 1);
-            }
-            window.updateDisplay(null);
+        } else {
+            var prepared = font.prepareText(patreon, x - patreonWidth/2f, y, -1, true, 0);
+            preparedTexts.add(prepared);
+            this.patreonLinkClicked = false;
         }
+
+        LinkedHashMap<RenderType, List<TextRenderable>> textRenderablesForType = new LinkedHashMap<>();
+
+        for (Font.PreparedText preparedText : preparedTexts) {
+            preparedText.visit(new Font.GlyphVisitor() {
+                @Override
+                public void acceptRenderable(TextRenderable renderable) {
+                    var renderType = renderable.renderType(Font.DisplayMode.POLYGON_OFFSET);
+                    var renderables = textRenderablesForType.computeIfAbsent(renderType, k -> new ArrayList<>());
+                    renderables.add(renderable);
+                }
+            });
+        }
+
+        try (ByteBufferBuilder byteBufferBuilder = new ByteBufferBuilder(1024)) {
+            for (var entry : textRenderablesForType.entrySet()) {
+                var renderType = entry.getKey();
+                var renderables = entry.getValue();
+
+                BufferBuilder bufferBuilder = new BufferBuilder(byteBufferBuilder, renderType.primitiveTopology(), renderType.format());
+
+                var identity = new Matrix4f();
+                for (var renderable : renderables) {
+                    renderable.render(identity, bufferBuilder, LightCoordsUtil.FULL_BRIGHT, false);
+                }
+
+                MeshData meshData = bufferBuilder.build();
+
+                if (meshData != null) {
+                    try (FlashbackDrawBuffer drawBuffer = new FlashbackDrawBuffer(GpuBuffer.USAGE_MAP_WRITE)) {
+                        drawBuffer.upload(meshData);
+                        PreparedRenderType prepared = renderType.prepare();
+                        try (RenderPass renderPass = RenderSystem.getDevice().createCommandEncoder().createRenderPass(
+                            () -> "flashback export overlay",
+                            Objects.requireNonNull(displayTarget.getColorTextureView()), Optional.empty(),
+                            Objects.requireNonNull(displayTarget.getDepthTextureView()), OptionalDouble.empty())
+                        ) {
+                            drawBuffer.drawRenderType(prepared, renderPass);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!window.isIconified()) {
+            var windowSurface = Minecraft.getInstance().windowSurface();
+
+            try {
+                boolean needsReconfigure = true;
+                var currentConfig = windowSurface.currentConfiguration().orElse(null);
+                if (currentConfig != null) {
+                    needsReconfigure = currentConfig.width() != windowFramebufferWidth || currentConfig.height() != windowFramebufferHeight;
+                }
+                if (needsReconfigure || windowSurface.isSuboptimal()) {
+                    GpuSurface.Configuration config = new GpuSurface.Configuration(windowFramebufferWidth, windowFramebufferHeight, GpuSurface.PresentMode.FIFO);
+                    windowSurface.configure(config);
+                }
+                windowSurface.acquireNextTexture();
+            } catch (SurfaceException ignored) {}
+
+            if (windowSurface.isAcquired()) {
+                windowSurface.blitFromTexture(RenderSystem.getDevice().createCommandEncoder(), displayTarget.getColorTextureView());
+            }
+
+            RenderSystem.getDevice().createCommandEncoder().submit();
+
+            if (windowSurface.isAcquired()) {
+                windowSurface.present();
+            }
+        } else {
+            RenderSystem.getDevice().createCommandEncoder().submit();
+        }
+
+        RenderSystem.getDynamicUniforms().reset();
+        Minecraft.getInstance().levelRenderer.endFrame();
 
         return cancel;
     }
@@ -721,7 +1186,9 @@ public class ExportJob {
 
         ticks.add(new TickInfo(0, 0, false));
 
-        double residual = 0;
+        BigDecimal lastResidual = BigDecimal.ZERO;
+        BigDecimal residual = BigDecimal.ZERO;
+        BigDecimal fpsReciprocal = BigDecimal.ONE.divide(BigDecimal.valueOf(fps), MathContext.DECIMAL128);
         int currentTick = 0;
 
         TickrateKeyframeCapture capture = new TickrateKeyframeCapture();
@@ -729,21 +1196,51 @@ public class ExportJob {
         int count = endTick - startTick;
         int startFrozen = -1;
         while (currentTick <= count) {
-            capture.tickrate = 20.0f;
-            capture.frozen = false;
-            editorState.applyKeyframes(capture, startTick + currentTick + (float) residual);
+            BigDecimal remainingFrame = BigDecimal.ONE;
 
-            residual += capture.tickrate / fps;
+            while (remainingFrame.compareTo(BigDecimal.ZERO) > 0) {
+                capture.tickrate = 20.0f;
+                capture.frozen = false;
+                editorState.applyKeyframes(capture, startTick + currentTick + residual.floatValue());
 
-            int roundedResidual = (int) residual;
-            residual -= roundedResidual;
+                capture.tickrate = Math.max(KeyframeChangeTickrate.MIN_TICKRATE, capture.tickrate);
+
+                BigDecimal ticksThisFrame = BigDecimal.valueOf(capture.tickrate).multiply(fpsReciprocal).multiply(remainingFrame);
+                if (ticksThisFrame.compareTo(BigDecimal.ONE) > 0) {
+                    residual = residual.add(BigDecimal.ONE);
+                    // remainingFrame *= 1 - 1/ticksThisFrame
+                    BigDecimal lastRemainingFrame = remainingFrame;
+                    remainingFrame = remainingFrame.multiply(BigDecimal.ONE.subtract(BigDecimal.ONE.divide(ticksThisFrame, MathContext.DECIMAL128))).round(MathContext.DECIMAL128);
+                    if (remainingFrame.compareTo(lastRemainingFrame) >= 0) {
+                        throw new IllegalStateException("remainingFrame >= lastRemainingFrame");
+                    }
+                } else {
+                    residual = residual.add(ticksThisFrame);
+                    break;
+                }
+            }
+
+            int roundedResidual = residual.intValue();
+            residual = residual.subtract(BigDecimal.valueOf(roundedResidual));
             currentTick += roundedResidual;
 
-            if (currentTick > count) {
+            if (currentTick >= count) {
                 break;
             }
 
-            double currentTickDouble = currentTick + residual;
+            double currentTickDouble = currentTick + residual.doubleValue();
+            if (roundedResidual > 0 && currentTickDouble % 1.0 == 0.0) {
+                residual = BigDecimal.ZERO;
+            }
+
+            // Sanity checks to make sure we don't get into an infinite loop
+            if (roundedResidual < 0) {
+                throw new IllegalStateException("roundedResidual < 0");
+            } else if (roundedResidual == 0 && residual.compareTo(lastResidual) <= 0) {
+                throw new IllegalStateException("roundedResidual == 0 && residual <= lastResidual)");
+            }
+            lastResidual = residual;
+
             if (!capture.frozen) {
                 startFrozen = -1;
                 ticks.add(new TickInfo(currentTickDouble, currentTickDouble, false));

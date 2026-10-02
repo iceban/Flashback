@@ -2,13 +2,9 @@ package com.moulberry.flashback.mixin.visuals;
 
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
-import com.mojang.blaze3d.vertex.PoseStack;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
-import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.entity.EntityRenderer;
-import net.minecraft.client.renderer.entity.state.EntityRenderState;
-import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.Entity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -22,13 +18,13 @@ public class MixinEntityRenderer {
     @WrapOperation(method = "extractRenderState", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/Entity;isInvisible()Z"))
     public boolean isInvisible(Entity instance, Operation<Boolean> original) {
         EditorState editorState = EditorStateManager.getCurrent();
-        if (editorState != null && editorState.hideDuringExport.contains(instance.getUUID())) {
+        if (editorState != null && editorState.isEntityHidden(instance)) {
             return true;
         }
         return original.call(instance);
     }
 
-    @WrapOperation(method = "extractRenderState", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/entity/EntityRenderer;shouldShowName(Lnet/minecraft/world/entity/Entity;D)Z"))
+    @WrapOperation(method = "extractNameTags(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/client/renderer/entity/state/EntityRenderState;FDD)V", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/entity/EntityRenderer;shouldShowName(Lnet/minecraft/world/entity/Entity;D)Z"))
     public boolean shouldShowName(EntityRenderer<?, ?> instance, Entity entity, double distance, Operation<Boolean> original) {
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null) {
@@ -36,7 +32,7 @@ public class MixinEntityRenderer {
                 return false;
             } else if (editorState.hideNametags.contains(entity.getUUID())) {
                 return false;
-            } else if (editorState.hideDuringExport.contains(entity.getUUID())) {
+            } else if (editorState.isEntityHidden(entity)) {
                 return false;
             }
         }
@@ -51,14 +47,14 @@ public class MixinEntityRenderer {
                 cir.setReturnValue(false);
             } else if (editorState.hideNametags.contains(entity.getUUID())) {
                 cir.setReturnValue(false);
-            } else if (editorState.hideDuringExport.contains(entity.getUUID())) {
+            } else if (editorState.isEntityHidden(entity)) {
                 cir.setReturnValue(false);
             }
         }
     }
 
-    @Inject(method = "submitNameTag", at = @At("HEAD"), cancellable = true)
-    public void submitNameTag(CallbackInfo ci) {
+    @Inject(method = "submitNameDisplay(Lnet/minecraft/client/renderer/entity/state/EntityRenderState;Lcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/SubmitNodeCollector;Lnet/minecraft/client/renderer/state/level/CameraRenderState;I)V", at = @At("HEAD"), cancellable = true)
+    public void submitNameDisplay(CallbackInfo ci) {
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null && !editorState.replayVisuals.renderNametags) {
             ci.cancel();

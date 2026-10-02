@@ -6,12 +6,12 @@ import com.moulberry.flashback.editor.ui.ImGuiHelper;
 import com.moulberry.flashback.editor.ui.WindowOpenState;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
-import imgui.flashback.ImGui;
-import imgui.flashback.ImGuiViewport;
-import imgui.flashback.flag.ImGuiCond;
-import imgui.flashback.flag.ImGuiWindowFlags;
-import imgui.flashback.type.ImBoolean;
-import imgui.flashback.type.ImString;
+import imgui.moulberry90.ImGui;
+import imgui.moulberry90.ImGuiViewport;
+import imgui.moulberry90.flag.ImGuiCond;
+import imgui.moulberry90.flag.ImGuiWindowFlags;
+import imgui.moulberry90.type.ImBoolean;
+import imgui.moulberry90.type.ImString;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.multiplayer.ClientPacketListener;
@@ -19,6 +19,7 @@ import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.resources.language.I18n;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.GameType;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -147,7 +148,12 @@ public class PlayerListWindow {
                 }
                 if (editorState != null) {
                     ImGui.sameLine();
-                    if (editorState.hideDuringExport.contains(profile.id())) {
+                    if (editorState.hideAllSpectators && playerInfo.getGameMode() == GameType.SPECTATOR) {
+                        ImGui.beginDisabled();
+                        ImGui.smallButton(I18n.get("flashback.show"));
+                        ImGui.endDisabled();
+                        ImGui.setItemTooltip(I18n.get("flashback.hidden_because_spectator"));
+                    } else if (editorState.hideDuringExport.contains(profile.id())) {
                         if (ImGui.smallButton(I18n.get("flashback.show"))) {
                             editorState.hideDuringExport.remove(profile.id());
                             lastUpdate = currentTime;
@@ -176,6 +182,9 @@ public class PlayerListWindow {
                 if (ImGui.button(I18n.get("flashback.show_all"))) {
                     changeVisibilityOfAll(editorState, true);
                     lastUpdate = currentTime;
+                }
+                if (ImGui.checkbox(I18n.get("flashback.hide_all_spectators"), editorState.hideAllSpectators)) {
+                    editorState.hideAllSpectators = !editorState.hideAllSpectators;
                 }
             }
         }

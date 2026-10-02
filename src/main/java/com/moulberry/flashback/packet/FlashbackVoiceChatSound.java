@@ -11,7 +11,7 @@ import net.minecraft.world.phys.Vec3;
 import java.util.UUID;
 
 public interface FlashbackVoiceChatSound extends CustomPacketPayload {
-    Type<FlashbackVoiceChatSound> TYPE = new Type<>(Flashback.createResourceLocation("voice_chat_sound"));
+    Type<FlashbackVoiceChatSound> TYPE = new Type<>(Flashback.createIdentifier("voice_chat_sound"));
     StreamCodec<FriendlyByteBuf, FlashbackVoiceChatSound> STREAM_CODEC = new FlashbackVoiceChatSoundStreamCodec();
 
     @Override
@@ -38,7 +38,9 @@ public interface FlashbackVoiceChatSound extends CustomPacketPayload {
         @Override
         public void writeExtraData(FriendlyByteBuf friendlyByteBuf) {
             friendlyByteBuf.writeByte(TYPE_LOCATIONAL_SOUND);
-            friendlyByteBuf.writeVec3(this.position);
+            friendlyByteBuf.writeDouble(this.position.x());
+            friendlyByteBuf.writeDouble(this.position.y());
+            friendlyByteBuf.writeDouble(this.position.z());
             friendlyByteBuf.writeFloat(this.distance);
         }
     }
@@ -70,7 +72,11 @@ public interface FlashbackVoiceChatSound extends CustomPacketPayload {
                     return new SoundStatic(uuid, samples);
                 }
                 case TYPE_LOCATIONAL_SOUND -> {
-                    Vec3 position = friendlyByteBuf.readVec3();
+                    Vec3 position = new Vec3(
+                        friendlyByteBuf.readDouble(),
+                        friendlyByteBuf.readDouble(),
+                        friendlyByteBuf.readDouble()
+                    );
                     float distance = friendlyByteBuf.readFloat();
                     return new SoundLocational(uuid, samples, position, distance);
                 }

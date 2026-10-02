@@ -1,6 +1,7 @@
 package com.moulberry.flashback.keyframe.types;
 
 import com.moulberry.flashback.Flashback;
+import com.moulberry.flashback.editor.ui.ReplayUI;
 import com.moulberry.flashback.keyframe.KeyframeType;
 import com.moulberry.flashback.keyframe.change.KeyframeChange;
 import com.moulberry.flashback.keyframe.change.KeyframeChangeCameraPosition;
@@ -11,7 +12,7 @@ import com.moulberry.flashback.keyframe.impl.TickrateKeyframe;
 import com.moulberry.flashback.playback.ReplayServer;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
-import imgui.flashback.ImGui;
+import imgui.moulberry90.ImGui;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.resources.language.I18n;
 import org.jetbrains.annotations.Nullable;
@@ -59,12 +60,13 @@ public class SpeedKeyframeType implements KeyframeType<TickrateKeyframe> {
         }
 
         return () -> {
+            speedKeyframeInput[0] = Math.max(KeyframeChangeTickrate.MIN_TICKRATE, speedKeyframeInput[0]);
             ImGui.sliderFloat(I18n.get("flashback.keyframe.speed"), speedKeyframeInput, 0.1f, 10f);
-            if (ImGui.button(I18n.get("flashback.add"))) {
+            if (ImGui.button(I18n.get("flashback.add")) || ReplayUI.consumeConfirm()) {
                 return new TickrateKeyframe(speedKeyframeInput[0] * 20.0f);
             }
             ImGui.sameLine();
-            if (ImGui.button(I18n.get("gui.cancel"))) {
+            if (ImGui.button(I18n.get("gui.cancel")) || ReplayUI.consumeCancel()) {
                 ImGui.closeCurrentPopup();
             }
             return null;

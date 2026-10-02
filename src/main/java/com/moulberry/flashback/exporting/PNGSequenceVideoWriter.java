@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.Consumer;
 
 public class PNGSequenceVideoWriter implements VideoWriter {
 
@@ -140,39 +141,42 @@ public class PNGSequenceVideoWriter implements VideoWriter {
         }
     }
 
-    public void encode(NativeImage src, @Nullable FloatBuffer audioBuffer) {
-        if (audioBuffer != null) {
-            throw new RuntimeException("PNG Sequence does not support encoding audio");
-        }
-
-        checkEncodeError(src);
-
-        if (this.finishEncodeThread.get() || this.finishedWriting.get()) {
-            src.close();
-            throw new IllegalStateException("Cannot encode after finish()");
-        }
-
-        while (true) {
-            try {
-                this.encodeQueue.put(src);
-                break;
-            } catch (InterruptedException ignored) {}
-            checkEncodeError(src);
-        }
+    public void encode(ImageFrame src) {
+        throw new UnsupportedOperationException();
+//        if (audioBuffer != null) {
+//            throw new RuntimeException("PNG Sequence does not support encoding audio");
+//        }
+//
+//        checkEncodeError(src);
+//
+//        if (this.finishEncodeThread.get() || this.finishedWriting.get()) {
+//            src.close();
+//            throw new IllegalStateException("Cannot encode after finish()");
+//        }
+//
+//        while (true) {
+//            try {
+//                this.encodeQueue.put(src);
+//                break;
+//            } catch (InterruptedException ignored) {}
+//            checkEncodeError(src);
+//        }
     }
 
-    public void finish() {
+    public void finish(Consumer<String> wait) {
         checkEncodeError(null);
 
         while (!this.encodeQueue.isEmpty()) {
             checkEncodeError(null);
             LockSupport.parkNanos("waiting for encode queue to empty", 100000L);
+            wait.accept("encode queue");
         }
 
         this.finishEncodeThread.set(true);
 
         while (!this.finishedWriting.get()) {
             LockSupport.parkNanos("waiting for encoder thread to finish", 100000L);
+            wait.accept("thread finish");
         }
 
         checkEncodeError(null);

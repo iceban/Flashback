@@ -6,19 +6,19 @@ import com.moulberry.flashback.editor.ui.ImGuiHelper;
 import com.moulberry.flashback.editor.ui.ReplayUI;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
-import imgui.flashback.ImGui;
-import imgui.flashback.ImGuiListClipper;
-import imgui.flashback.ImGuiViewport;
-import imgui.flashback.callback.ImListClipperCallback;
-import imgui.flashback.flag.ImGuiCond;
-import imgui.flashback.flag.ImGuiWindowFlags;
-import imgui.flashback.type.ImBoolean;
-import imgui.flashback.type.ImString;
+import imgui.moulberry90.ImGui;
+import imgui.moulberry90.ImGuiListClipper;
+import imgui.moulberry90.ImGuiViewport;
+import imgui.moulberry90.callback.ImListClipperCallback;
+import imgui.moulberry90.flag.ImGuiCond;
+import imgui.moulberry90.flag.ImGuiWindowFlags;
+import imgui.moulberry90.type.ImBoolean;
+import imgui.moulberry90.type.ImString;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.resources.language.I18n;
 import net.minecraft.core.particles.ParticleType;
 import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.EntityType;
 
 import java.util.ArrayList;
@@ -35,15 +35,16 @@ public class RenderFilterWindow {
 
     private static ImString particleSearch = ImGuiHelper.createResizableImString("");
     private static String lastParticleSearch = null;
-    private static List<ResourceLocation> searchedParticleTypes = new ArrayList<>();
+    private static List<Identifier> searchedParticleTypes = new ArrayList<>();
 
     public static void render(ImBoolean open, boolean newlyOpened) {
+        ImGuiViewport viewport = ImGui.getMainViewport();
+
         if (newlyOpened) {
-            ImGuiViewport viewport = ImGui.getMainViewport();
             ImGui.setNextWindowPos(viewport.getCenterX(), viewport.getCenterY(), ImGuiCond.Appearing, 0.5f, 0.5f);
         }
 
-        ImGui.setNextWindowSizeConstraints(250, 50, 5000, 5000);
+        ImGui.setNextWindowSizeConstraints(250, 50, 5000, viewport.getSizeY()/2);
         int flags = ImGuiWindowFlags.NoFocusOnAppearing;
         if (!wasDocked) {
             flags |= ImGuiWindowFlags.AlwaysAutoResize;
@@ -99,12 +100,23 @@ public class RenderFilterWindow {
                     if (searchedEntityTypes.isEmpty()) {
                         ImGui.textUnformatted(I18n.get("flashback.no_entities_found"));
                     } else {
+                        if (ImGui.smallButton(I18n.get("flashback.enable_all"))) {
+                            editorState.filteredEntities.clear();
+                        }
+                        ImGui.sameLine();
+                        if (ImGui.smallButton(I18n.get("flashback.disable_all"))) {
+                            for (EntityType<?> entityType : BuiltInRegistries.ENTITY_TYPE) {
+                                Identifier resourceLocation = BuiltInRegistries.ENTITY_TYPE.getKey(entityType);
+                                editorState.filteredEntities.add(resourceLocation.toString());
+                            }
+                        }
+
                         if (ImGui.beginChild("##Scroller", 0, 300)) {
                             ImGuiListClipper.forEach(searchedEntityTypes.size(), new ImListClipperCallback() {
                                 @Override
                                 public void accept(int i) {
                                     EntityType<?> entityType = searchedEntityTypes.get(i);
-                                    ResourceLocation resourceLocation = BuiltInRegistries.ENTITY_TYPE.getKey(entityType);
+                                    Identifier resourceLocation = BuiltInRegistries.ENTITY_TYPE.getKey(entityType);
 
                                     boolean filtered = editorState.filteredEntities.contains(resourceLocation.toString());
 
@@ -120,17 +132,6 @@ public class RenderFilterWindow {
                             });
                         }
                         ImGui.endChild();
-
-                        if (ImGui.smallButton(I18n.get("flashback.enable_all"))) {
-                            editorState.filteredEntities.clear();
-                        }
-                        ImGui.sameLine();
-                        if (ImGui.smallButton(I18n.get("flashback.disable_all"))) {
-                            for (EntityType<?> entityType : BuiltInRegistries.ENTITY_TYPE) {
-                                ResourceLocation resourceLocation = BuiltInRegistries.ENTITY_TYPE.getKey(entityType);
-                                editorState.filteredEntities.add(resourceLocation.toString());
-                            }
-                        }
                     }
 
                     ImGui.endTabItem();
@@ -142,10 +143,10 @@ public class RenderFilterWindow {
                         lastParticleSearch = searchString;
                         searchedParticleTypes = new ArrayList<>();
 
-                        List<ResourceLocation> contains = new ArrayList<>();
+                        List<Identifier> contains = new ArrayList<>();
 
                         for (ParticleType<?> particleType : BuiltInRegistries.PARTICLE_TYPE) {
-                            ResourceLocation resourceLocation = BuiltInRegistries.PARTICLE_TYPE.getKey(particleType);
+                            Identifier resourceLocation = BuiltInRegistries.PARTICLE_TYPE.getKey(particleType);
                             if (resourceLocation == null) {
                                 continue;
                             }
@@ -170,11 +171,25 @@ public class RenderFilterWindow {
                     if (searchedParticleTypes.isEmpty()) {
                         ImGui.textUnformatted(I18n.get("flashback.no_particles_found"));
                     } else {
+                        if (ImGui.smallButton(I18n.get("flashback.enable_all"))) {
+                            editorState.filteredParticles.clear();
+                        }
+                        ImGui.sameLine();
+                        if (ImGui.smallButton(I18n.get("flashback.disable_all"))) {
+                            for (ParticleType<?> particleType : BuiltInRegistries.PARTICLE_TYPE) {
+                                Identifier resourceLocation = BuiltInRegistries.PARTICLE_TYPE.getKey(particleType);
+                                if (resourceLocation == null) {
+                                    continue;
+                                }
+                                editorState.filteredParticles.add(resourceLocation.toString());
+                            }
+                        }
+
                         if (ImGui.beginChild("##Scroller", 0, 300)) {
                             ImGuiListClipper.forEach(searchedParticleTypes.size(), new ImListClipperCallback() {
                                 @Override
                                 public void accept(int i) {
-                                    ResourceLocation particleType = searchedParticleTypes.get(i);
+                                    Identifier particleType = searchedParticleTypes.get(i);
 
                                     boolean filtered = editorState.filteredParticles.contains(particleType.toString());
 
@@ -196,20 +211,6 @@ public class RenderFilterWindow {
                             });
                         }
                         ImGui.endChild();
-
-                        if (ImGui.smallButton(I18n.get("flashback.enable_all"))) {
-                            editorState.filteredParticles.clear();
-                        }
-                        ImGui.sameLine();
-                        if (ImGui.smallButton(I18n.get("flashback.disable_all"))) {
-                            for (ParticleType<?> particleType : BuiltInRegistries.PARTICLE_TYPE) {
-                                ResourceLocation resourceLocation = BuiltInRegistries.PARTICLE_TYPE.getKey(particleType);
-                                if (resourceLocation == null) {
-                                    continue;
-                                }
-                                editorState.filteredParticles.add(resourceLocation.toString());
-                            }
-                        }
                     }
 
                     ImGui.pushTextWrapPos(ReplayUI.scaleUi(300));
